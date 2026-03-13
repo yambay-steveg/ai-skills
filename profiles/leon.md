@@ -1,41 +1,77 @@
-# Leon's Draft Skills
+# Leon's Skills
 
-## Overview
+## Source
 
-This profile contains Leon's draft skills for use with AI assistants.
+- SharePoint site: `ClaudeCodeSetup`
+- Path: `Shared Documents/Skills for Claude/`
+- Installation guide: `How-to-Install-Skills.pdf` (v1.2, 2026-03-09)
 
-## Draft Skills
+## Skills
 
-### Productivity & Organisation
-- Task prioritisation and time management
-- Meeting facilitation and note-taking
-- Project planning and milestone tracking
-- Email drafting and correspondence
+### md-to-word (v1.9)
 
-### Research & Analysis
-- Web research and information synthesis
-- Data summarisation and report writing
-- Comparative analysis and decision support
-- Literature review and reference gathering
+**Purpose:** Convert Markdown files to professionally styled Word documents (.docx) using customisable templates and pandoc.
 
-### Communication
-- Technical writing and documentation
-- Presentation creation and slide design
-- Content editing and proofreading
-- Stakeholder update drafting
+**Key features:**
+- YAML front matter for document metadata (title, type, issue date, revision)
+- Template system with memo and legal templates (plus support for private templates)
+- Auto-numbered headings (legal template)
+- Cross-reference support (`{ref:id}` markers become Word REF fields)
+- Content table styling (Yambay Standard style)
+- Custom paragraph styles via pandoc fenced divs
 
-### Technical
-- Code review and feedback
-- Debugging assistance and troubleshooting
-- API documentation
-- Script writing for automation
+**Dependencies:** python-docx, pyyaml, lxml, pandoc (Homebrew)
 
-### Learning & Development
-- Concept explanation and tutoring
-- Study plan creation
-- Knowledge gap identification
-- Learning resource curation
+**Install path:** `~/.claude/skills/md-to-word/`
 
-## Status
+**Triggers:** User asks to convert markdown to Word, create a Word doc, export to docx, generate a styled document.
 
-All skills above are in **draft** status and are subject to revision.
+---
+
+### files (v1.4)
+
+**Purpose:** Unified file access across local storage, OneDrive sync, and SharePoint/Teams via Microsoft Graph API.
+
+**Key features:**
+- Multi-tier search: local filesystem, OneDrive sync folders, then cloud (Graph API)
+- Download files from SharePoint URLs
+- Upload files to SharePoint
+- List SharePoint folder contents
+- Parse Teams/SharePoint URLs to extract site and drive info
+- User-specific config for paths, team IDs, and known sites
+
+**Dependencies:** msal, requests, python-dotenv
+
+**Install path:** `~/.claude/skills/files/`
+
+**Config required:** `config/paths.json`, `config/teams.json`, `config/sites.json` (copy from `template/config/`)
+
+**Triggers:** User asks to find/download/upload files, lists folder contents, pastes a Teams or SharePoint URL.
+
+---
+
+### email (v1.5)
+
+**Purpose:** Search, compose, and reply to M365 email via Microsoft Graph API.
+
+**Key features:**
+- KQL-based email search (from, subject, date range, attachments)
+- Attachment download
+- Draft creation (HTML format, appears in Outlook Drafts)
+- Reply and reply-all with quoted original message preserved
+- Admin detection (auto-switches to admin app for Global Admins)
+- Batch email support
+
+**Dependencies:** msal, requests, python-dotenv
+
+**Install path:** `~/.claude/skills/email/`
+
+**Triggers:** User asks to find/search email, draft/compose email, reply to email.
+
+## Testing Status
+
+| Skill | Installed | Deps OK | Auth Tested | Functional Test |
+|-------|-----------|---------|-------------|-----------------|
+| md-to-word | Yes | Yes | N/A | Pending |
+| files | Yes | Yes | Pass | Pending |
+| email | Yes | Yes | Pass | Pass (search) |
