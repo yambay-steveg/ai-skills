@@ -1,13 +1,12 @@
 # AI Skills Repository
 
-Personal repository for building, testing, and managing AI assistant skills (starting with Claude Code, expanding to other tools).
+Personal repository for building, testing, and sharing Claude Code skills.
 
 ## Purpose
 
+- Build custom Claude Code skills (SKILL.md + optional Python scripts)
 - Evaluate and test skills created by colleagues (e.g., Leon's skills)
-- Develop new custom skills for personal and company use
-- Document skill patterns, installation procedures, and lessons learned
-- Central knowledge base to return to across sessions
+- Central knowledge base for skill patterns and lessons learned
 
 ## Installed Skills (Local)
 
@@ -69,8 +68,29 @@ To add more sites, query Graph API: `GET /groups/{groupId}/sites/root` then `GET
 
 ## Repo Structure
 
-- `profiles/` — Notes on skills created by team members (source, versions, what they do)
+- `skills/` — Custom skills authored in this repo
+  - `_template/` — Copy this to start a new skill (SKILL.md + scripts/ + tests/)
+  - Each skill folder contains: `SKILL.md` (Claude loads this), `scripts/` (Python code), `tests/`
+- `profiles/` — Notes on third-party skills under evaluation
+- `install.sh` — Copies a skill from this repo to `~/.claude/skills/`
 - `CLAUDE.md` — This file (project context for AI assistants)
+
+## Building Skills
+
+A Claude Code skill is a folder containing at minimum a `SKILL.md` with YAML frontmatter:
+- `name` — skill identifier
+- `description` — when to trigger (include example phrases)
+- `allowed-tools` — which Claude Code tools the skill can use
+
+The SKILL.md body contains instructions Claude follows. If the skill needs code, put scripts in `scripts/` and have the SKILL.md instruct Claude to call them.
+
+### Workflow
+
+1. `cp -r skills/_template skills/my-skill`
+2. Edit SKILL.md and add scripts
+3. `pytest skills/my-skill/tests/`
+4. `./install.sh my-skill` (copies to `~/.claude/skills/`)
+5. Restart Claude Code session
 
 ## Known Limitations
 

@@ -1,0 +1,16 @@
+{
+  "github_username": "yambay-steveg",
+  "interest_topics": [
+    "AI", "artificial intelligence", "machine learning", "LLM",
+    "engineering", "architecture", "cloud", "Azure", "platform",
+    "DevOps", "CI/CD", "testing", "automation"
+  ],
+  "known_noise_senders": [],
+  "known_good_senders": [],
+  "sanebox_folders": {
+    "news": "@SaneNews",
+    "cc": "@SaneCC",
+    "blackhole": "@SaneBlackHole",
+    "later": "@SaneLater"
+  }
+}
