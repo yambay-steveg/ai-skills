@@ -1,0 +1,3 @@
+#!/bin/zsh
+# AI Personal — open Claude Code in the personal folder
+cd /Users/steve/Source/personal && claude

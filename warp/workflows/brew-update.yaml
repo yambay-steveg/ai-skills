@@ -1,0 +1,60 @@
+name: "Brew Update & Upgrade"
+command: |
+  echo "🍺 === Homebrew Update & Upgrade Workflow ==="
+  echo ""
+  
+  echo "📡 Step 1: Updating Homebrew..."
+  brew update
+  echo ""
+  
+  echo "🔍 Step 2: Checking for outdated packages..."
+  outdated=$(brew outdated)
+  if [ -z "$outdated" ]; then
+    echo "✅ All packages are already up to date!"
+  else
+    echo "📦 Outdated packages found:"
+    echo "$outdated"
+    echo ""
+    
+    echo "🚀 Step 3: Upgrading outdated packages..."
+    read -p "Do you want to upgrade all outdated packages? (y/N): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      echo "📝 Note: Skipping ESET (manages its own updates)"
+      # Upgrade formulae
+      brew upgrade --formula
+      # Upgrade casks except ESET
+      outdated_casks=$(brew outdated --cask --quiet | grep -v eset-cyber-security)
+      if [ -n "$outdated_casks" ]; then
+        echo "$outdated_casks" | xargs brew upgrade --cask
+      fi
+      echo ""
+      echo "✅ Upgrade completed!"
+    else
+      echo "❌ Upgrade skipped."
+    fi
+  fi
+  
+  echo ""
+  echo "🧹 Step 4: Cleaning up..."
+  read -p "Do you want to clean up old versions? (y/N): " -n 1 -r
+  echo
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    brew cleanup
+    echo "✅ Cleanup completed!"
+  else
+    echo "❌ Cleanup skipped."
+  fi
+  
+  echo ""
+  echo "⚠️  Step 5: Checking for issues..."
+  brew doctor | head -10
+  
+  echo ""
+  echo "🎉 Brew workflow completed!"
+description: "Check for Homebrew updates, optionally upgrade packages, and clean up"
+tags:
+  - brew
+  - update
+  - upgrade
+  - maintenance

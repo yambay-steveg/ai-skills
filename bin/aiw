@@ -1,0 +1,3 @@
+#!/bin/zsh
+# AI Work — open Claude Code in the work folder
+cd /Users/steve/Source/work/yambay-steveg/claude-code-steveg && claude

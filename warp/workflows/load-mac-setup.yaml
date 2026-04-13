@@ -1,0 +1,25 @@
+name: Load Mac Setup Documentation
+command: |
+  echo "🔄 Loading Mac setup context for AI assistance..."
+  echo ""
+  
+  # Run the context loader
+  ~/load-setup-context.sh
+  
+  echo ""
+  echo "💬 AI Prompt Ready:"
+  echo "   'Can you read my setup documentation and help with my Mac?'"
+  echo ""
+  echo "📋 Quick Reference:"
+  echo "   • Development: ~/Development/ (Git repos)"
+  echo "   • Business Docs: ~/OneDrive - Yambay/"  
+  echo "   • Commands: new_project, cddev, cddocs"
+  echo "   • Full docs: Mac-Setup-Documentation.md"
+
+description: Load Steve's complete Mac setup documentation for AI context
+tags: [setup, documentation, ai, context]
+source_url: null
+author: Steve Godding
+author_url: null
+shells: [zsh, bash]
+arguments: []
