@@ -1,3 +1,52 @@
 #!/bin/zsh
 # AI Work — open Claude Code in the work folder
-cd /Users/steve/Source/work/yambay-steveg/claude-code-steveg && claude
+# Usage: aiw [-d|--dangerous] [folder] [extra claude args...]
+#   -d      start claude with --dangerously-skip-permissions
+#   folder  start in this folder instead — absolute path, or relative to
+#           the work folder, or a task name under active/
+base=/Users/steve/Source/work/yambay-steveg/claude-code-steveg
+usage() {
+  cat <<EOF
+aiw — open Claude Code in the work folder
+Usage: aiw [-d|--dangerous] [folder] [extra claude args...]
+
+  -d, --dangerous  start claude with --dangerously-skip-permissions
+  -h, --help       show this help
+  folder           start in this folder instead of the work folder root.
+                   Resolved as: absolute path, then relative to the work
+                   folder, then a task name under active/.
+                   (Only used if the folder exists; otherwise the argument
+                   is passed through to claude.)
+
+Anything else is passed through to claude (e.g. --resume, --model opus).
+
+Base folder: $base
+
+Examples:
+  aiw                        # work folder root
+  aiw -d                     # root, skip permission prompts
+  aiw antora-docs-search     # active/antora-docs-search
+  aiw -d scratch --resume    # scratch/, dangerous, resume session
+EOF
+}
+args=()
+target=$base
+for a in "$@"; do
+  case "$a" in
+    -h|--help) usage; exit 0 ;;
+    -d|--dangerous) args+=(--dangerously-skip-permissions) ;;
+    -*) args+=("$a") ;;
+    *)
+      if [[ "$target" == "$base" && -d "$a" && "$a" = /* ]]; then
+        target=$a
+      elif [[ "$target" == "$base" && -d "$base/$a" ]]; then
+        target=$base/$a
+      elif [[ "$target" == "$base" && -d "$base/active/$a" ]]; then
+        target=$base/active/$a
+      else
+        args+=("$a")
+      fi
+      ;;
+  esac
+done
+cd "$target" && claude "${args[@]}"
