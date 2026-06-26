@@ -1,0 +1,477 @@
+#!/usr/bin/env python3
+"""cardctl — drive the session-card system.
+
+A card is a markdown note with YAML frontmatter:
+
+    ---
+    type: project         # project | program (bug | idea | decision optional)
+    title: Session card system
+    status: in-progress
+    tags: [area/tools]                                # facet tags only
+    program: "[[Work Ops]]"                           # hierarchy via wikilinks
+    sessionId: 81cd5424-8257-4374-b4e9-2b5986a0b8b2   # optional pin
+    paths:                                            # folders the card works on (absolute)
+      - /Users/steve/Source/work/yambay-steveg/claude-code-steveg/active/session-card-system
+    ---
+    body / notes
+
+Commands:
+  cardctl launch <card.md>          Open the card's `paths` as one VSCode window and resume the
+                                    pinned session (or start a fresh one if none / --new).
+  cardctl launch <card.md> --new    Force a fresh session even if the card pins one.
+  cardctl link   <card.md>          Find the newest Claude session under the card's folder and
+                                    write its id back into the card's `sessionId` frontmatter.
+
+macOS only for now. `code` and `open` are resolved by absolute path (works under GUI launchers
+like Obsidian Shell Commands, which run with a minimal PATH).
+"""
+import argparse
+import datetime
+import glob
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+def find_exe(name, fallbacks):
+    """Resolve an executable robustly — GUI launchers (e.g. Obsidian Shell Commands)
+    run with a minimal PATH, so fall back to well-known absolute locations."""
+    found = shutil.which(name)
+    if found:
+        return found
+    for fb in fallbacks:
+        if Path(fb).exists():
+            return fb
+    return name  # last resort: let subprocess fail with a clear error
+
+
+CODE = find_exe("code", ["/opt/homebrew/bin/code", "/usr/local/bin/code"])
+OPEN = find_exe("open", ["/usr/bin/open"])
+
+PROJECTS = Path.home() / ".claude" / "projects"
+CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "session-cards"
+URI = "vscode://anthropic.claude-code/open?session={sid}"
+URI_NEW = "vscode://anthropic.claude-code/open"
+
+# Where cards live, per Domain (R10): the Obsidian vault's Cards/ folder.
+CARDS_DIRS = {
+    "work": Path.home() / "Source/work/yambay-steveg/work-knowledge/Cards",
+    "personal": Path.home() / "Source/personal/knowledge/personal-knowledge/Cards",
+}
+BUTTON_BAR = ("`BUTTON[launch-card]` `BUTTON[new-session]` "
+              "`BUTTON[launch-dangerous]` `BUTTON[pin-session]`")
+
+
+def die(msg):
+    print(f"cardctl: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def parse_fm(fm):
+    """Minimal frontmatter parser for the card schema: scalars, inline lists
+    (`tags: [a, b]`) and block lists (`paths:` then `  - item`). No deps."""
+    data, key = {}, None
+    for raw in fm.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        if raw[:1] in (" ", "\t") and raw.strip().startswith("- "):
+            if key is not None:
+                data.setdefault(key, [])
+                if isinstance(data[key], list):
+                    data[key].append(raw.strip()[2:].strip())
+            continue
+        if ":" in raw:
+            k, _, v = raw.partition(":")
+            key, v = k.strip(), v.strip()
+            if v == "":
+                data[key] = []                      # block list to follow
+            elif v.startswith("[") and v.endswith("]"):
+                data[key] = [x.strip() for x in v[1:-1].split(",") if x.strip()]
+            else:
+                data[key] = v
+    return data
+
+
+def read_card(path):
+    text = Path(path).read_text()
+    if not text.startswith("---"):
+        die(f"{path}: no YAML frontmatter")
+    _, fm, _body = text.split("---", 2)
+    return parse_fm(fm), text
+
+
+def expand(p):
+    return str(Path(os.path.expanduser(p)).resolve())
+
+
+def encode_cwd(cwd):
+    """Claude encodes a project cwd by replacing '/' with '-'."""
+    return cwd.replace("/", "-")
+
+
+def origin_of_session(sid):
+    """Locate a session's transcript and return the cwd it was created in."""
+    hits = glob.glob(str(PROJECTS / "*" / f"{sid}.jsonl"))
+    if not hits:
+        return None
+    with open(hits[0]) as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(rec, dict) and rec.get("cwd"):
+                return rec["cwd"]
+    # fall back to the encoded dir name (lossy, but better than nothing)
+    return None
+
+
+def build_workspace(card_path, fm, sid, dangerous=False):
+    paths = [expand(p) for p in (fm.get("paths") or [])]
+
+    # When resuming, ensure the session's origin folder is in the workspace, else the
+    # resume lookup may not find it (it is scoped to the open workspace folders).
+    if sid:
+        origin = origin_of_session(sid)
+        if origin and expand(origin) not in paths:
+            paths.insert(0, expand(origin))
+
+    folders = [p for p in dict.fromkeys(paths) if Path(p).is_dir()]
+    if not folders:
+        die(f"{card_path}: no existing folders in `paths`")
+
+    # --dangerous: workspace-scoped settings so the Claude extension starts in
+    # bypassPermissions mode for THIS window only (regenerated each launch).
+    settings = {}
+    if dangerous:
+        settings = {
+            "claudeCode.allowDangerouslySkipPermissions": True,
+            "claudeCode.initialPermissionMode": "bypassPermissions",
+        }
+
+    CACHE.mkdir(parents=True, exist_ok=True)
+    ws = CACHE / f"{Path(card_path).stem}.code-workspace"
+    ws.write_text(json.dumps(
+        {"folders": [{"name": Path(p).name, "path": p} for p in folders], "settings": settings},
+        indent=2,
+    ))
+    return ws, folders
+
+
+def primary_context(fm):
+    """First existing folder in `paths` — where this card's sessions are created (cwd)."""
+    for p in (fm.get("paths") or []):
+        if Path(expand(p)).is_dir():
+            return expand(p)
+    return None
+
+
+def sessions_for_folder(folder):
+    """Transcripts created with cwd=folder, newest first."""
+    proj = PROJECTS / encode_cwd(folder)
+    return sorted(proj.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def first_user_msg(path):
+    """A short preview of a session's first human message (for the pick list)."""
+    try:
+        with open(path) as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if not (isinstance(rec, dict) and rec.get("type") == "user"):
+                    continue
+                c = (rec.get("message") or {}).get("content")
+                if isinstance(c, list):
+                    c = " ".join(p.get("text", "") for p in c
+                                 if isinstance(p, dict) and p.get("type") == "text")
+                c = (c or "").strip()
+                if c and not c.startswith("<") and "command-" not in c[:40] \
+                        and not c.lower().startswith("caveat"):
+                    return c[:70]
+    except OSError:
+        pass
+    return "(no preview)"
+
+
+def pick_session(folder, sess):
+    """Interactive chooser (terminal only). Returns a sid, or None for 'new'."""
+    print(f"sessions under {folder}:")
+    for i, p in enumerate(sess[:9], 1):
+        ts = datetime.datetime.fromtimestamp(p.stat().st_mtime).strftime("%d %b %H:%M")
+        print(f"  {i}) {ts}  {first_user_msg(p)}")
+    print("  0) start a new session")
+    try:
+        choice = input("choose [1]: ").strip() or "1"
+    except EOFError:
+        return sess[0].stem  # non-interactive (e.g. a button) → latest
+    if choice == "0":
+        return None
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(sess[:9]):
+            return sess[idx].stem
+    except ValueError:
+        pass
+    return sess[0].stem
+
+
+def resolve_session(fm, args):
+    """Decide which session to resume (sid) and why (mode). None sid → start fresh.
+    Precedence: --new → fresh; pinned `sessionId` → that; else newest under the
+    card's context folder (--pick to choose); else fresh (R14)."""
+    if args.new:
+        return None, "new (forced)"
+    pin = fm.get("sessionId")
+    if isinstance(pin, str) and pin.strip():
+        return pin.strip(), "pinned"
+    folder = primary_context(fm)
+    if folder:
+        sess = sessions_for_folder(folder)
+        if sess:
+            if args.pick:
+                return pick_session(folder, sess), "picked"
+            return sess[0].stem, "latest for folder"
+    return None, "new (no prior session)"
+
+
+def cmd_launch(args):
+    fm, _ = read_card(args.card)
+    sid, mode = resolve_session(fm, args)
+    ws, folders = build_workspace(args.card, fm, sid, dangerous=args.dangerous)
+
+    print(f"opening {len(folders)} folder(s){' [DANGEROUS: bypassPermissions]' if args.dangerous else ''}:")
+    for p in folders:
+        print(f"  - {p}")
+    subprocess.run([CODE, str(ws)], check=True)
+    time.sleep(args.delay)
+
+    if sid:
+        print(f"resuming session {sid}  ({mode})")
+        subprocess.run([OPEN, URI.format(sid=sid)], check=True)
+    else:
+        print(f"starting a new session  ({mode})")
+        subprocess.run([OPEN, URI_NEW], check=True)
+        print(f"  → pin it later if you want with:  cardctl link {args.card}")
+
+
+def cmd_link(args):
+    fm, text = read_card(args.card)
+    if fm.get("sessionId") and not args.force:
+        die(f"{args.card}: already has sessionId {fm['sessionId']} (use --force to overwrite)")
+
+    origin = args.cwd or next((expand(p) for p in (fm.get("paths") or [])
+                               if Path(expand(p)).is_dir()), None)
+    if not origin:
+        die(f"{args.card}: no origin folder (set `paths` or pass --cwd)")
+
+    proj = PROJECTS / encode_cwd(origin)
+    sessions = sorted(proj.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not sessions:
+        die(f"no sessions found under {origin}\n  (looked in {proj})")
+    sid = sessions[0].stem
+    print(f"newest session under {origin}:\n  {sid}")
+
+    # targeted frontmatter edit — preserve the rest of the file verbatim
+    lines = text.splitlines(keepends=True)
+    out, in_fm, done, seen_open = [], False, False, False
+    for ln in lines:
+        if ln.strip() == "---":
+            if not seen_open:
+                seen_open, in_fm = True, True
+                out.append(ln)
+                continue
+            if in_fm and not done:
+                if not any(l.startswith("sessionId:") for l in out):
+                    out.append(f"sessionId: {sid}\n")
+                in_fm, done = False, True
+                out.append(ln)
+                continue
+        if in_fm and ln.startswith("sessionId:"):
+            out.append(f"sessionId: {sid}\n")
+            done = True
+            continue
+        out.append(ln)
+    Path(args.card).write_text("".join(out))
+    print(f"wrote sessionId into {args.card}")
+
+
+def cmd_new(args):
+    cards = CARDS_DIRS.get(args.domain)
+    if cards is None:
+        die(f"unknown domain {args.domain!r} (choose: {', '.join(CARDS_DIRS)})")
+    cards.mkdir(parents=True, exist_ok=True)
+    dest = cards / f"{args.slug}.md"
+    if dest.exists() and not args.force:
+        die(f"{dest} already exists (use --force to overwrite)")
+
+    tags = ([args.area] if args.area else []) + ([f"jira/{args.jira}"] if args.jira else [])
+    paths = [expand(p) for p in (args.path or [])]
+
+    # The primary path (paths[0]) is the activity folder — where sessions root (cwd) and
+    # working state lives. Create it for a brand-new activity so it can be a workspace folder.
+    if args.make_folder and paths:
+        prim = Path(paths[0])
+        prim.mkdir(parents=True, exist_ok=True)
+        readme = prim / "README.md"
+        if not readme.exists():
+            readme.write_text(f"# {args.title}\n\n**Started:** {datetime.date.today().isoformat()} "
+                              "(AWST)\n\nActivity folder — sessions root here; working state lives here.\n")
+        print(f"  created activity folder {prim}")
+    for p in paths:
+        if not Path(p).is_dir():
+            print(f"cardctl: warning — path does not exist yet: {p}", file=sys.stderr)
+
+    # Human glance fields (shown on the board) first; plumbing (cardctl) last.
+    fm = [f"type: {args.type}", f"title: {args.title}", f"status: {args.status}",
+          f"summary: {json.dumps(args.summary or '')}",
+          f"latest: {json.dumps(args.latest or '')}",
+          f"tags: [{', '.join(tags)}]"]
+    if args.program:
+        fm.append(f'program: "[[{args.program}]]"')
+    if args.session:
+        fm.append(f"sessionId: {args.session}")
+    fm.append("paths:")
+    fm += [f"  - {p}" for p in paths] or ["  - "]
+
+    body = f"\n{BUTTON_BAR}\n\n{args.summary or '<one line; deep state lives in the activity folder>'}\n"
+    dest.write_text("---\n" + "\n".join(fm) + "\n---\n" + body)
+    print(f"created {dest}")
+    if args.session:
+        print(f"  pinned session {args.session}")
+    print("  open it in Obsidian (Reading view) and click ▶ Launch session")
+
+
+def cmd_reconcile(args):
+    """R9: card status → disk. For cards marked archived/done, move their `active/<x>`
+    folder to `archive/YYYY-MM-<x>` in that task repo and update the card's path.
+    Cross-repo: cards live in the vault, folders in the task repos. Dry-run by default."""
+    closing = {"archived", "done"}
+    prefix = datetime.date.today().strftime("%Y-%m-")
+
+    cards = []
+    for cd in CARDS_DIRS.values():
+        if cd.is_dir():
+            cards += sorted(cd.glob("*.md"))
+
+    # Folders referenced by a still-active card must NOT be archived (R14 Pattern B).
+    parsed, live_refs = [], set()
+    for c in cards:
+        fm, text = read_card(c)
+        status = str(fm.get("status") or "").strip().lower()
+        paths = [expand(p) for p in (fm.get("paths") or [])]
+        parsed.append((c, status, paths, fm, text))
+        if status not in closing:
+            live_refs.update(paths)
+
+    todo = []
+    for c, status, paths, fm, text in parsed:
+        if status not in closing:
+            continue
+        for p, raw in zip(paths, (fm.get("paths") or [])):
+            if "/active/" not in p or not Path(p).is_dir():
+                continue
+            if p in live_refs:
+                print(f"SKIP (shared with a live card): {p}  [{c.name}]")
+                continue
+            repo, _, _ = p.partition("/active/")
+            leaf = Path(p).name
+            target = f"{repo}/archive/{prefix}{leaf}"
+            todo.append((c, p, raw, repo, leaf, target, text))
+
+    if not todo:
+        print("reconcile: nothing to do.")
+        return
+    for c, p, raw, repo, leaf, target, text in todo:
+        old_proj = PROJECTS / encode_cwd(p)
+        n_tx = len(list(old_proj.glob("*.jsonl"))) if old_proj.is_dir() else 0
+        tx_note = f"  (+{n_tx} session transcript(s) relocated)" if n_tx else ""
+        print(f"{'APPLY' if args.apply else 'DRY '}  {p}\n        → {target}{tx_note}   [{c.name}]")
+        if not args.apply:
+            continue
+        Path(repo, "archive").mkdir(exist_ok=True)
+        rel_src = p[len(repo) + 1:]
+        rel_dst = target[len(repo) + 1:]
+        r = subprocess.run(["git", "-C", repo, "mv", rel_src, rel_dst])
+        if r.returncode != 0:  # folder not tracked — fall back to plain move + add
+            subprocess.run(["mv", p, target], check=True)
+            subprocess.run(["git", "-C", repo, "add", rel_dst], check=True)
+        subprocess.run(["git", "-C", repo, "commit", "-q", "-m", f"Archive: {leaf}"], check=True)
+        # Relocate the activity folder's session transcripts so the archived folder still
+        # resolves to its sessions (resume keeps working post-archive).
+        if old_proj.is_dir():
+            new_proj = PROJECTS / encode_cwd(target)
+            new_proj.mkdir(parents=True, exist_ok=True)
+            for item in old_proj.iterdir():
+                subprocess.run(["mv", str(item), str(new_proj / item.name)], check=True)
+            try:
+                old_proj.rmdir()
+            except OSError:
+                pass
+        # update the card's path (vault file; rides the vault auto-backup)
+        new_text = c.read_text().replace(f"- {raw}", f"- {target}", 1)
+        c.write_text(new_text)
+        print(f"        moved + committed in {Path(repo).name}; card path updated{tx_note}")
+    if not args.apply:
+        print("\n(dry run — rerun with --apply to perform the moves)")
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="cardctl", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    pl = sub.add_parser("launch", help="open card folders + resume or start its session")
+    pl.add_argument("card")
+    pl.add_argument("--new", action="store_true",
+                    help="start a fresh session (ignore pin / latest)")
+    pl.add_argument("--pick", action="store_true",
+                    help="choose from the card's recent sessions (terminal only)")
+    pl.add_argument("-d", "--dangerous", action="store_true",
+                    help="start the session in bypassPermissions mode (skip approvals)")
+    pl.add_argument("--delay", type=float, default=1.5,
+                    help="seconds to wait after launching VSCode before firing the URI")
+    pl.set_defaults(func=cmd_launch)
+
+    pk = sub.add_parser("link", help="capture newest session id into the card")
+    pk.add_argument("card")
+    pk.add_argument("--cwd", help="origin folder to search (default: first existing path)")
+    pk.add_argument("--force", action="store_true", help="overwrite an existing sessionId")
+    pk.set_defaults(func=cmd_link)
+
+    pn = sub.add_parser("new", help="scaffold a card in the Domain vault's Cards/ folder")
+    pn.add_argument("slug", help="card filename (kebab-case, no extension)")
+    pn.add_argument("--title", required=True)
+    pn.add_argument("--summary", help="one-line 'what this is' (shown on the board)")
+    pn.add_argument("--latest", help="one-line current state and/or next step (shown on the board)")
+    pn.add_argument("--path", action="append",
+                    help="context folder (repeatable; first = primary, where sessions run)")
+    pn.add_argument("--session", help="pin this session id (e.g. from `session-search`)")
+    pn.add_argument("--jira", help="Jira key → jira/<KEY> tag")
+    pn.add_argument("--area", help="area/* facet tag, e.g. area/v7")
+    pn.add_argument("--program", help="program name → program: \"[[name]]\" link")
+    pn.add_argument("--status", default="in-progress")
+    pn.add_argument("--type", default="project", help="project | program (default project)")
+    pn.add_argument("--domain", default="work", choices=list(CARDS_DIRS))
+    pn.add_argument("--make-folder", action="store_true",
+                    help="create the primary path (activity folder) + a stub README")
+    pn.add_argument("--force", action="store_true", help="overwrite an existing card")
+    pn.set_defaults(func=cmd_new)
+
+    pr = sub.add_parser("reconcile",
+                        help="archive folders of cards marked archived/done (R9; dry-run by default)")
+    pr.add_argument("--apply", action="store_true", help="perform the moves (default: dry run)")
+    pr.set_defaults(func=cmd_reconcile)
+
+    args = ap.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
