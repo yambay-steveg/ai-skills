@@ -1,11 +1,8 @@
 # Research: what to build the session-card system on
 
-**Date:** 2026-06-24 (AWST)
-**Question:** What can I leverage to (a) manage cards and (b) make selecting a card open the
-right folders in VSCode *and* start/resume the matching Claude session?
-**Context:** Obsidian = knowledge base. Moving Warp → **VSCode** as both editor and Claude
-front-end (dropping JetBrains to save $100/yr). Cards link to one or more folders (typically a
-task folder in the personal repo *plus* the separate source/content repo being worked on).
+**Date:** 2026-06-24 (AWST)\
+**Question:** What can I leverage to (a) manage cards and (b) make selecting a card open the right folders in VSCode *and* start/resume the matching Claude session?\
+**Context:** Obsidian = knowledge base. Moving Warp → **VSCode** as both editor and Claude front-end (dropping JetBrains to save $100/yr). Cards link to one or more folders (typically a task folder in the personal repo *plus* the separate source/content repo being worked on).
 
 > Companion to `README.md` (the requirements spec). This is the "basis/tooling" research that
 > feeds the still-open *Storage/architecture* and *UI surface* decisions in that spec.

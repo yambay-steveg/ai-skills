@@ -1,8 +1,7 @@
 # Session Card System — requirements spec
 
-**Started:** 2026-06-24 (AWST)
-**Scope:** Requirements only. *What* I need from a card-based work-tracking layer over my
-Claude Code sessions — tool-agnostic. No build, architecture, or UI decisions here yet.
+**Started:** 2026-06-24 (AWST)\
+**Scope:** Requirements only. *What* I need from a card-based work-tracking layer over my Claude Code sessions — tool-agnostic. No build, architecture, or UI decisions here yet.\
 **Source:** Manual — distilled from the Nimbalyst design work after deciding to move off Nimbalyst.
 
 ---
