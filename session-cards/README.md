@@ -64,14 +64,13 @@ strictly separate (no cross-Domain leakage).
 
 "Task" is retired as a precise term — it survives only as the `/tasks` skill name.
 
-> **⚠ UNDER REVIEW — Steve's reservation (2026-06-25).** We collapsed the three *shape* tiers
-> (Activity / Project / Program) onto a two-tier *card* model (`project` + `program`, with an
-> **Activity = a session**, not a card — R14). Locked provisionally so it's concrete to review.
-> The open worry: **lightweight actionable captures lose a dedicated card type** — a quick
-> reminder / change-req mid-project no longer has an obvious lightweight card (it becomes a small
-> `project` card, an `idea` card, or a folder note). If that feels wrong in practice, reintroduce
-> a lightweight `activity`/`task` card type (back to three card tiers). **Revisit after living
-> with it.**
+> **✓ RESOLVED (2026-06-27, by dogfooding).** The reservation was: collapsing to two card tiers
+> (`project` + `program`, Activity = a session — R14) leaves **lightweight actionable captures**
+> with no home. Resolution: **they live as checkboxes, not cards.** Todos are `- [ ]` items in a
+> card's body or its folder's `## Open actions`; a todo **graduates to its own `project` card**
+> only when it becomes a *stream of work* (a deliverable, its own sessions, its own board status).
+> So there are **three levels — checkbox / `project` card / `program`** — but only the middle and
+> top are *cards*. No third card tier is needed. (See "Todos & ongoing work" below.)
 
 **Design goal (a key driver):** today I keep one long-running session per stream of work,
 because breaking it up risks losing accumulated context. This system should make me *comfortable
@@ -92,12 +91,29 @@ my system, and because **an Activity is a session, not a card** (R14), the card 
 
 A *standalone Activity worth tracking* (the promoted case — R1) gets a small `project` card; it's
 structurally a project (a folder + a session or two), just smaller, so it needs no separate type.
-(`plan`→`project`; `task`/`activity` is **not** a card type — it's a session.) See the UNDER
-REVIEW flag in R1 — this two-tier collapse is the part to re-examine.
+(`plan`→`project`; `task`/`activity` is **not** a card type — it's a session.) The lightweight-
+capture worry this raised is **resolved** — todos are checkboxes, not cards (see *Todos & ongoing
+work* below, and the resolved note in R1).
 
 Cards carry at minimum: type, title, status, tags, free-text body, a context (`paths`), and links
 to the session(s) under it. `project` cards additionally carry progress and a pointer to their
 deliverable folder.
+
+### Todos & ongoing work
+
+One test decides where a todo lives: **"will I open sessions to work on this, producing something
+— or is it a step I tick off within other work?"**
+
+- **Checkbox** — a `- [ ]` in a card's body or the folder's `## Open actions`. A todo *within* a
+  piece of work. Lightweight, zero ceremony — **most todos live here.**
+- **`project` card** — when the todo is its *own stream of work*: a deliverable, its own sessions,
+  its own board status. A checkbox **graduates** to a card when it earns it.
+- **`program`** — an ongoing theme containing many of those.
+
+A **follow-on deliverable** (e.g. "get the white paper reviewed by EXCOM" after the licensing
+decision closes) becomes its **own `project` card with its own context** — *not* a reopen of the
+finished card, and *not* sharing the finished card's folder (sharing couples lifecycles so the
+folder can't archive — R13 Pattern B). Reference the archived folder if it needs the history.
 
 **Rule carried over:** a `project` card is never silently set to done/completed — that's a
 deliberate, owner-confirmed action.
@@ -445,10 +461,11 @@ This is a requirements doc. Settled since the first draft (2026-06-24):
   (not the note frontmatter), treats cards as list-items (not notes), and filters by tag not link
   — all of which fight R9/R11/R13/R3 — plus it's maintenance-fragile.
 
-Under review (provisionally locked, to be re-examined after use):
+Resolved by dogfooding:
 
-- **Two-tier vs three-tier card model** — collapsing Activity into "a session" (R2/R14). Steve's
-  reservation is flagged in R1; the worry is lightweight actionable captures losing a card type.
+- **Two-tier card model** (R2/R14) — the reservation (lightweight captures losing a card type) is
+  **resolved**: todos are **checkboxes**, promoted to a `project` card only when they become a
+  stream of work (R1 resolved note + *Todos & ongoing work*). No third card tier needed.
 
 Still open, for a later pass:
 
