@@ -30,6 +30,7 @@ import datetime
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -422,6 +423,100 @@ def cmd_reconcile(args):
         print("\n(dry run — rerun with --apply to perform the moves)")
 
 
+CACHE_RE = re.compile(r"<!--\s*card:\s*(.+?)\s*-->")
+
+
+def card_matches_folder(fm, folder):
+    """True if the card's paths include `folder` (or `folder` is inside one)."""
+    folder = expand(folder)
+    for p in (fm.get("paths") or []):
+        ep = expand(p)
+        if folder == ep or folder.startswith(ep + "/"):
+            return True
+    return False
+
+
+def find_card_for(folder):
+    """Reverse-lookup the card whose `paths` cover `folder` (R: session→card link).
+    Fast path: a validated `<!-- card: PATH -->` cache line in folder/README.md.
+    Fallback: scan every Cards/ dir. Single source of truth = the cards' `paths`."""
+    folder = expand(folder)
+    readme = Path(folder) / "README.md"
+    if readme.is_file():
+        m = CACHE_RE.search(readme.read_text())
+        if m and Path(m.group(1)).is_file():
+            fm, _ = read_card(m.group(1))
+            if card_matches_folder(fm, folder):   # validate — cache can go stale (cross-repo)
+                return Path(m.group(1))
+    for cd in CARDS_DIRS.values():
+        if cd.is_dir():
+            for c in sorted(cd.glob("*.md")):
+                fm, _ = read_card(c)
+                if card_matches_folder(fm, folder):
+                    return c
+    return None
+
+
+def write_card_cache(folder, card_path):
+    """Record/refresh the `<!-- card: … -->` back-pointer in folder/README.md.
+    Idempotent — no write (no git churn) if the correct marker is already present."""
+    readme = Path(folder) / "README.md"
+    marker = f"<!-- card: {card_path} -->"
+    if readme.is_file():
+        existing = readme.read_text()
+        if marker in existing:
+            return
+        lines = [l for l in existing.splitlines() if not CACHE_RE.search(l)]
+        idx = next((i + 1 for i, l in enumerate(lines) if l.startswith("# ")), 0)
+        lines.insert(idx, marker)
+        readme.write_text("\n".join(lines) + "\n")
+    else:
+        readme.write_text(marker + "\n")
+
+
+def open_actions(folder, limit=6):
+    """Unchecked `- [ ]` items from the folder README's `## Open actions` (if any)."""
+    readme = Path(folder) / "README.md"
+    if not readme.is_file():
+        return []
+    out, in_sec = [], False
+    for l in readme.read_text().splitlines():
+        if l.startswith("## "):
+            in_sec = l.strip().lower().startswith("## open")
+            continue
+        if in_sec and l.strip().startswith("- [ ]"):
+            out.append(l.strip())
+    return out[:limit]
+
+
+def cmd_which(args):
+    folder = expand(args.folder or os.getcwd())
+    card = find_card_for(folder)
+    if not card:
+        if not args.quiet:
+            print(f"cardctl: no card references {folder}", file=sys.stderr)
+        sys.exit(1)
+    if args.record:
+        write_card_cache(folder, str(card))
+    if args.path_only:
+        print(str(card))
+        return
+    fm, _ = read_card(card)
+    def unq(v):
+        v = str(v).strip()
+        return v[1:-1] if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'" else v
+    print(f"Active card: {unq(fm.get('title', card.stem))}  [{card}]")
+    if fm.get("status"):
+        print(f"status: {unq(fm['status'])}")
+    if fm.get("latest"):
+        print(f"latest: {unq(fm['latest'])}")
+    acts = open_actions(folder)
+    if acts:
+        print("open actions:")
+        for a in acts:
+            print(f"  {a}")
+
+
 def main():
     ap = argparse.ArgumentParser(prog="cardctl", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -468,6 +563,13 @@ def main():
                         help="archive folders of cards marked archived/done (R9; dry-run by default)")
     pr.add_argument("--apply", action="store_true", help="perform the moves (default: dry run)")
     pr.set_defaults(func=cmd_reconcile)
+
+    pw = sub.add_parser("which", help="which card owns a folder (reverse lookup; for the session-start hook)")
+    pw.add_argument("folder", nargs="?", help="folder to resolve (default: cwd)")
+    pw.add_argument("--record", action="store_true", help="cache the result as a back-pointer in the folder README")
+    pw.add_argument("--path-only", action="store_true", help="print just the card file path")
+    pw.add_argument("--quiet", action="store_true", help="no error if no card matches (exit 1)")
+    pw.set_defaults(func=cmd_which)
 
     args = ap.parse_args()
     args.func(args)

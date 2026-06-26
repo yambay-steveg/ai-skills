@@ -17,7 +17,13 @@ cardctl launch <card.md> -d       # start in bypassPermissions mode (skip approv
 cardctl link   <card.md>          # pin the newest session id under the card's folder (--force to overwrite)
 cardctl new    <slug> --title …   # scaffold a card in the Domain vault's Cards/ folder
 cardctl reconcile [--apply]       # archive folders of cards marked archived/done (R9; dry-run by default)
+cardctl which [folder] [--record] # which card owns a folder (reverse lookup; powers the SessionStart hook)
 ```
+
+`cardctl which` resolves the card whose `paths` cover a folder (default: cwd) — used by the
+SessionStart hook (`~/bin/session-start-hook.sh`) to make every session card-aware. `--record`
+self-caches the link as a `<!-- card: … -->` line in the folder README (validated, single source
+of truth = the cards' `paths`).
 
 ## `reconcile` (R9 — card status → disk)
 
