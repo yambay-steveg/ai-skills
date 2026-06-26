@@ -5,7 +5,7 @@ Steve has an Obsidian vault at `/Users/steve/Source/work/yambay-steveg/work-know
 **Before working with the diary or vault, read the instructions file:**
 
 ```
-cat "/Users/steve/Source/work/yambay-steveg/work-knowledge/AI/Diary System.md"
+cat "/Users/steve/Source/work/yambay-steveg/work-knowledge/AI/diary-system.md"
 ```
 
 This file contains the diary format, folder structure, and conventions. Always follow it when logging activities or creating notes.
