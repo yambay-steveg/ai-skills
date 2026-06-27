@@ -10,12 +10,14 @@ dist/
 build/
 .eggs/
 .installed.cfg
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
+# Anchor build-dir ignores to the repo root so they don't swallow skill source
+# dirs like skills/*/lib/ (these names are Python build/virtualenv output).
+/lib/
+/lib64/
+/parts/
+/sdist/
+/var/
+/wheels/
 
 # Virtual environments
 .env
