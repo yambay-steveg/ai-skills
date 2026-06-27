@@ -505,13 +505,22 @@ Resolved by dogfooding:
 
 Still open, for a later pass:
 
-- **Single-source the deployable surfaces (the principle's teeth)** — `board.base`,
-  `Templates/card.md`, and the Shell Commands + Meta Bind button config currently exist as
-  *copies* in each vault (the 27 Jun personal port copied them from the work vault). Per the
-  "one management home" principle (R10), their canonical source should move to
-  `ai-skills/session-cards/` with a small **`cardctl deploy <domain>`** (or shell script) that
-  pushes them into a vault's `Cards/` + `.obsidian/plugins/`. Until then, board/template/button
-  changes must be hand-copied work↔personal or they drift.
+- **Single-source the deployable surfaces (the principle's teeth) — NEXT BUILD.** Several
+  surfaces now exist as hand-copied *duplicates* across the two vaults / `~/bin`, and they drift
+  every time we change one. Per the "one management home" principle (R10), give each a **canonical
+  source under `ai-skills/session-cards/deploy/`** and add **`cardctl deploy <work|personal|all>`**
+  to push them out. The surfaces to single-source:
+  - `Cards/board.base` (the Bases board) → each vault's `Cards/`
+  - `Templates/card.md` (card template, incl. `## Sessions`) → each vault's `Templates/`
+  - Shell Commands `data.json` (4 cardctl commands) → each vault's `.obsidian/plugins/obsidian-shellcommands/`
+  - Meta Bind `data.json` (4 button templates) → each vault's `.obsidian/plugins/obsidian-meta-bind-plugin/`
+  - Templater folder-template config (`Cards/` → `Templates/card.md`) → each vault's `.obsidian/plugins/templater-obsidian/data.json` (merge, don't clobber other settings)
+  - `bin/session-start-hook.sh` → `~/bin/` (already sourced from `ai-skills/bin/`)
+  - `bin/cardctl` → `~/bin/` (already sourced from `ai-skills/session-cards/`)
+
+  Design notes: `deploy` should be idempotent and safe (back up / merge `.obsidian` JSON rather
+  than overwrite; never touch a vault's notes, only the surfaces). Until built, board/template/
+  button/Templater/hook changes must be hand-copied work↔personal or they drift.
 - **Drag-board UX (roadmap, not now)** — Bases has no native drag-board yet. Options when the
   itch arrives, in rough order of appeal:
   1. A **bespoke VS Code extension** that renders a Kanban over the card files **and** triggers
