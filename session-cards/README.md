@@ -383,13 +383,17 @@ fields show on the board, the plumbing drives `cardctl` and is hidden from the b
 
 *Plumbing (for `cardctl`; not shown on the board):*
 - `paths` — context folder(s): the activity folder first (R12), then external source repos (absolute)
-- `sessionId` — *optional pin* of a specific session; the canonical session list is derived from
-  the folder (R8/R14)
+- `sessionId` — *the current pin* (default resume target). The *history* is the `## Sessions`
+  body log (below), not a frontmatter list.
 
-**Body — free-form and minimal, NOT a required structure.** Usually one line + a pointer to the
-activity folder / `CONTEXT.md` where the deep state lives. Don't restate `paths` or session lists
-(plumbing/derivable). Complex cards *may* add their own sections, but no body schema is mandated —
-that would reintroduce the ceremony the system avoids.
+**Body — free-form and minimal, with one conventional section: `## Sessions`.** Usually one line +
+a pointer to the activity folder / `CONTEXT.md` where the deep state lives. The **`## Sessions`**
+section is the **session history** — newest first, one bullet per session:
+`` - `<id>` — <date> — <what it did> ``. `cardctl link` writes the `` `id` — date `` (and the
+displaced previous pin); a session/AI adds the **"— what it did"** note. This is the durable,
+human-readable record — and it *preserves sessions that rooted outside the folder* (e.g. repo-top),
+which the folder-derived list (R8/R14) would otherwise miss. Beyond `## Sessions`, the body is
+free-form; no other structure is mandated.
 
 **Interaction with R9 reconcile (cross-repo — card in vault, folder in task repo):**
 - Only `paths` **inside a task repo's `active/`** are ever moved on archive. External/absolute

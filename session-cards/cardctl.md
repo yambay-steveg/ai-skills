@@ -14,7 +14,8 @@ cardctl launch <card.md>          # open the card's folders + resume its session
 cardctl launch <card.md> --new    # start a FRESH session (ignore pin / latest)
 cardctl launch <card.md> --pick   # choose from the card's recent sessions (terminal only)
 cardctl launch <card.md> -d       # start in bypassPermissions mode (skip approvals)
-cardctl link   <card.md>          # pin the newest session id under the card's folder (--force to overwrite)
+cardctl link   <card.md> --current   # pin the running session + log it under ## Sessions
+cardctl link   <card.md> --session ID # pin a specific session id (e.g. one that ran elsewhere)
 cardctl new    <slug> --title …   # scaffold a card in the Domain vault's Cards/ folder
 cardctl reconcile [--apply]       # file folders of cards marked archived (R9; done is left in place)
 cardctl which [folder] [--record] # which card owns a folder (reverse lookup; powers the SessionStart hook)
@@ -97,11 +98,21 @@ The card's button bar maps to these, via Meta Bind templates → Shell Commands:
 **▶ Launch session** (`launch`) · **✦ New session** (`--new`) · **⚡ Launch (skip approvals)**
 (`-d`) · **📌 Pin latest** (`link --force`). See the operating note for the wiring.
 
-### `link`
+### `link` — pin a session + log history
 
-Finds the newest `*.jsonl` under the card's origin folder (first existing `paths` entry, or
-`--cwd`), and writes its id into the card's `sessionId:` frontmatter (targeted edit — the rest
-of the file is preserved verbatim). `--force` overwrites an existing id.
+Pins a session as the card's `sessionId` **and logs it under a `## Sessions` heading in the card
+body** (the session history). Pick the session by:
+- `--current` — the running session (the newest transcript across all projects).
+- `--session <id>` — an exact id (needed for sessions that ran *outside* the card's folder, e.g.
+  rooted at a repo top).
+- *(default)* the newest transcript under the card's folder (`--cwd` to point elsewhere).
+
+**Session history convention:** the card's **`## Sessions`** section is the readable log —
+newest first, one bullet per session: `` - `<id>` — <date> — <what it did> ``. `cardctl link`
+writes the `` `id` — date `` (and the displaced previous pin if not already logged); a session/AI
+fills in the **"— what it did"** note. The frontmatter `sessionId` marks the *current* pin;
+`## Sessions` is the durable history. Re-pinning is non-destructive — the old pin stays logged.
+(`--force` is accepted but no longer needed.)
 
 ## Card schema
 

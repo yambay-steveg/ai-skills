@@ -281,45 +281,84 @@ def cmd_launch(args):
         print(f"  → pin it later if you want with:  cardctl link {args.card}")
 
 
+UUID_RE = re.compile(r"`([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})`")
+
+
+def session_date(sid):
+    """Date a session ran, from its transcript mtime (for the ## Sessions log)."""
+    hits = glob.glob(str(PROJECTS / "*" / f"{sid}.jsonl"))
+    if hits:
+        return datetime.datetime.fromtimestamp(Path(hits[0]).stat().st_mtime).strftime("%d %b %Y")
+    return ""
+
+
 def cmd_link(args):
+    """Pin a session as the card's `sessionId` AND log it under the card's `## Sessions`
+    history (newest first; an AI fills in 'what it did'). Re-pin freely — the previous pin
+    stays logged. Pick the session: `--session <id>` | `--current` (the running session) |
+    newest transcript under the card's folder (`--cwd` to point elsewhere)."""
     fm, text = read_card(args.card)
-    if fm.get("sessionId") and not args.force:
-        die(f"{args.card}: already has sessionId {fm['sessionId']} (use --force to overwrite)")
 
-    origin = args.cwd or next((expand(p) for p in (fm.get("paths") or [])
-                               if Path(expand(p)).is_dir()), None)
-    if not origin:
-        die(f"{args.card}: no origin folder (set `paths` or pass --cwd)")
+    if args.session:
+        sid = args.session.strip()
+    elif args.current:
+        tx = glob.glob(str(PROJECTS / "*" / "*.jsonl"))
+        if not tx:
+            die("no session transcripts found")
+        sid = Path(max(tx, key=lambda p: Path(p).stat().st_mtime)).stem
+        print(f"current session: {sid}")
+    else:
+        origin = args.cwd or next((expand(p) for p in (fm.get("paths") or [])
+                                   if Path(expand(p)).is_dir()), None)
+        if not origin:
+            die(f"{args.card}: no folder to search — pass --session <id> or --cwd")
+        proj = PROJECTS / encode_cwd(origin)
+        sess = sorted(proj.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not sess:
+            die(f"no sessions found under {origin} (looked in {proj}); "
+                f"pass --session <id> for a session that ran elsewhere")
+        sid = sess[0].stem
+        print(f"newest session under {origin}: {sid}")
 
-    proj = PROJECTS / encode_cwd(origin)
-    sessions = sorted(proj.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not sessions:
-        die(f"no sessions found under {origin}\n  (looked in {proj})")
-    sid = sessions[0].stem
-    print(f"newest session under {origin}:\n  {sid}")
+    old = fm.get("sessionId")
+    old = old.strip() if isinstance(old, str) and old.strip() else None
 
-    # targeted frontmatter edit — preserve the rest of the file verbatim
+    # Sessions already logged in the body (so re-pinning doesn't duplicate).
+    logged = set(UUID_RE.findall(text))
+    # Newest-first: the new current, then the session it displaced (if not already logged).
+    add = [i for i in ([sid] + ([old] if old and old != sid else [])) if i not in logged]
+    # `sessionId` (frontmatter) marks the current pin; the log is just id — date (newest first),
+    # and an AI fills in the "— what it did" note. No (current) marker to go stale.
+    entries = [f"- `{i}` — {session_date(i) or '?'}" for i in add]
+
     lines = text.splitlines(keepends=True)
-    out, in_fm, done, seen_open = [], False, False, False
+    out, in_fm, seen_open, sid_set, inserted = [], False, False, False, (not entries)
     for ln in lines:
         if ln.strip() == "---":
             if not seen_open:
-                seen_open, in_fm = True, True
-                out.append(ln)
-                continue
-            if in_fm and not done:
-                if not any(l.startswith("sessionId:") for l in out):
+                seen_open = in_fm = True
+                out.append(ln); continue
+            if in_fm:
+                if not sid_set:
                     out.append(f"sessionId: {sid}\n")
-                in_fm, done = False, True
-                out.append(ln)
-                continue
-        if in_fm and ln.startswith("sessionId:"):
-            out.append(f"sessionId: {sid}\n")
-            done = True
-            continue
+                in_fm = False
+                out.append(ln); continue
+        if in_fm:
+            if ln.startswith("sessionId:"):
+                out.append(f"sessionId: {sid}\n"); sid_set = True; continue
+            out.append(ln); continue
         out.append(ln)
+        if not inserted and ln.strip() == "## Sessions":
+            out += [e + "\n" for e in entries]
+            inserted = True
+    if not inserted:  # no ## Sessions section yet — append one
+        if out and not out[-1].endswith("\n"):
+            out.append("\n")
+        out.append("\n## Sessions\n\n")
+        out += [e + "\n" for e in entries]
     Path(args.card).write_text("".join(out))
-    print(f"wrote sessionId into {args.card}")
+    print(f"pinned {sid}; logged {len(entries)} session(s) under ## Sessions"
+          + (f" (previous {old} kept in history)" if old and old != sid else ""))
 
 
 def cmd_new(args):
@@ -360,7 +399,11 @@ def cmd_new(args):
     fm.append("paths:")
     fm += [f"  - {p}" for p in paths] or ["  - "]
 
-    body = f"\n{BUTTON_BAR}\n\n{args.summary or '<one line; deep state lives in the activity folder>'}\n"
+    sessions = "\n## Sessions\n\n"
+    if args.session:
+        sessions += f"- `{args.session}` — {session_date(args.session) or '?'}  — (current)\n"
+    body = (f"\n{BUTTON_BAR}\n\n{args.summary or '<one line; deep state lives in the activity folder>'}\n"
+            f"{sessions}")
     dest.write_text("---\n" + "\n".join(fm) + "\n---\n" + body)
     print(f"created {dest}")
     if args.session:
@@ -555,10 +598,14 @@ def main():
                     help="seconds to wait after launching VSCode before firing the URI")
     pl.set_defaults(func=cmd_launch)
 
-    pk = sub.add_parser("link", help="capture newest session id into the card")
+    pk = sub.add_parser("link", help="pin a session into the card (old pin → pastSessions history)")
     pk.add_argument("card")
-    pk.add_argument("--cwd", help="origin folder to search (default: first existing path)")
-    pk.add_argument("--force", action="store_true", help="overwrite an existing sessionId")
+    pk.add_argument("--session", help="pin this exact session id; "
+                                      "needed for sessions that ran outside the card's folder")
+    pk.add_argument("--current", action="store_true",
+                    help="pin the CURRENT (running) session — the newest transcript across all projects")
+    pk.add_argument("--cwd", help="folder to search for the newest session (default: first existing path)")
+    pk.add_argument("--force", action="store_true", help="(accepted for compatibility; re-pin is always non-destructive now)")
     pk.set_defaults(func=cmd_link)
 
     pn = sub.add_parser("new", help="scaffold a card in the Domain vault's Cards/ folder")
