@@ -56,7 +56,7 @@ The old zip-based distribution from `ClaudeCodeSetup` SharePoint site is no long
 ## Skills Management
 
 Full documentation on how skills are organised, synced, and published is in the Obsidian work knowledge vault:
-**`AI/Skills Management.md`** in `/Users/steve/Source/work/yambay-steveg/work-knowledge/`
+**`AI/skills-management.md`** in `/Users/steve/Source/work/yambay-steveg/work-knowledge/`
 
 Read that document for publish/retrieve commands and the full inventory.
 
@@ -66,6 +66,7 @@ Read that document for publish/retrieve commands and the full inventory.
   - `_template/` — Copy this to start a new skill (SKILL.md + scripts/ + tests/)
   - `email-tidy/` — SaneBox folder triage skill
   - `session-search/` — Search and resume past Claude Code sessions
+  - `fastmail-integration/` — Read/search/draft personal Fastmail over JMAP (draft-only)
 - `raycast/` — Raycast script commands that launch Claude Code skills
 - `warp/` — Warp terminal workflows and rules
   - `workflows/` — YAML workflow definitions
