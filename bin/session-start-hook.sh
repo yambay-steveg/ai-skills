@@ -18,8 +18,10 @@ if [ -n "$cwd" ]; then
   if [ -n "$card" ]; then
     msg="${msg}
 
-Session-card context — this working folder maps to a card. Open with where it stands + what's next, and refresh the card's \`latest\` (and tick open actions) on wrap-up:
-${card}"
+Session-card context — this working folder maps to a card (shown below). Open with where it stands + what's next.
+${card}
+
+Card conventions (don't hand-invent fields): on wrap, record this session — run \`cardctl link <card-path-above> --current\`, then add a one-line note under the card's \`## Sessions\` heading (what this session did). Refresh \`latest\` (current state / next step); set \`status\` to one of backlog | in-progress | on-hold | done | archived (\`done\` clears the board but keeps the folder; \`archived\` files it). \`sessionId\` = current pin; \`## Sessions\` (body) = the readable history. Full how-to: ai-skills/session-cards/cardctl.md and the work vault Procedures/session-card-system.md note."
   fi
 fi
 
