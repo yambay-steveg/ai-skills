@@ -388,9 +388,13 @@ def cmd_new(args):
             print(f"cardctl: warning — path does not exist yet: {p}", file=sys.stderr)
 
     # Human glance fields (shown on the board) first; plumbing (cardctl) last.
+    # json.dumps gives YAML-safe double-quoting; ensure_ascii=False keeps em-dashes etc.
+    # literal in the file (YAML would parse \uXXXX, but the raw card stays readable).
+    def yq(s):
+        return json.dumps(s or "", ensure_ascii=False)
     fm = [f"type: {args.type}", f"title: {args.title}", f"status: {args.status}",
-          f"summary: {json.dumps(args.summary or '')}",
-          f"latest: {json.dumps(args.latest or '')}",
+          f"summary: {yq(args.summary)}",
+          f"latest: {yq(args.latest)}",
           f"tags: [{', '.join(tags)}]"]
     if args.program:
         fm.append(f'program: "[[{args.program}]]"')
