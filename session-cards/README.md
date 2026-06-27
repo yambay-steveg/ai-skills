@@ -174,6 +174,19 @@ be a graph node. Worth it for the visual map.)
 
 ## R6 — Views are disposable lenses (Kanban-first, no Gantt)
 
+**Status vocabulary** (controlled, so the board's `groupBy: status` doesn't fragment into
+near-duplicate columns): `backlog` → `in-progress` → `on-hold` → `done` → `archived`.
+
+- `backlog` / `in-progress` / `on-hold` = **active** (on the Board view; folder in `active/`).
+  `on-hold` is a live pause (folder stays).
+- **`done` = complete but not filed** — drops off the active Board (to a *Done* view), but the
+  **folder stays in `active/`**. Reopen by setting it back to `in-progress` (nothing to un-move).
+- **`archived` = filed** — the deliberate end state; `cardctl reconcile` moves the folder to
+  `archive/` (R9). **Only `archived` is reconciled — `done` is left in place.**
+
+The `done`↔`archived` split is intentional: clear something off the board the moment it's done,
+without committing to filing it, since it may reopen. Archiving is a separate, explicit action.
+
 - **Kanban board** with status columns is the primary view of "what's in play".
 - Every other view is a disposable lens over the same cards:
   - **Facet lenses** = tag filters: `#area/*`, `#kind/*`, `#jira/`.
@@ -255,6 +268,25 @@ permanent notes through shared `area/*` tags (R4) and the program/project wikili
 the board renders in the vault I actually open in Obsidian. (See R15 on why transient cards in
 the vault don't make it the "system of record": role ≠ location; the dedicated `Cards/` folder
 cordons them.)
+
+**Principle — one management home, two domains of data (2026-06-27).** The card *system itself*
+(the `cardctl` tool, this spec, the operating docs, and the **deployable per-vault surfaces** —
+`board.base`, `Templates/card.md`, the Shell Commands + Meta Bind button config) is **maintained
+in a single home: the Work workspace (`yambay-steveg/ai-skills`)** — because that's where Steve
+does most of his card-system work. It *operates on both domains' card data* (work cards in
+`work-knowledge/Cards/`, personal cards in `personal-knowledge/Cards/`). So: **make system changes
+once, in the work workspace, then deploy** the surfaces to each vault — don't fork per-vault
+copies that drift. (The deploy step is a follow-up — see "still open".)
+
+**Principle — `cardctl` is the engine, not the human interface (2026-06-27).** Steve should
+rarely type `cardctl`. The day-to-day interfaces are: (a) the **GUI** — the Obsidian board +
+button bar now, a custom VS Code/Kanban board later; and (b) a **conversational AI that knows
+`cardctl`** ("new card for X", "archive this"), which it does via this doc + the SessionStart
+card-awareness. The CLI is the substrate for the GUI, the AI, and automation — design for those
+layers, not for hand-typing. Consequences: card *creation* should be frictionless without the CLI
+(template auto-applied to `Cards/`, or "ask the AI"); the human-facing status default lives in the
+**template** (`backlog`), and the AI sets status contextually — `cardctl`'s own CLI default is
+secondary.
 
 ## R11 — Claude is the primary card-manager (so cards are plain markdown files)
 
@@ -469,6 +501,13 @@ Resolved by dogfooding:
 
 Still open, for a later pass:
 
+- **Single-source the deployable surfaces (the principle's teeth)** — `board.base`,
+  `Templates/card.md`, and the Shell Commands + Meta Bind button config currently exist as
+  *copies* in each vault (the 27 Jun personal port copied them from the work vault). Per the
+  "one management home" principle (R10), their canonical source should move to
+  `ai-skills/session-cards/` with a small **`cardctl deploy <domain>`** (or shell script) that
+  pushes them into a vault's `Cards/` + `.obsidian/plugins/`. Until then, board/template/button
+  changes must be hand-copied work↔personal or they drift.
 - **Drag-board UX (roadmap, not now)** — Bases has no native drag-board yet. Options when the
   itch arrives, in rough order of appeal:
   1. A **bespoke VS Code extension** that renders a Kanban over the card files **and** triggers

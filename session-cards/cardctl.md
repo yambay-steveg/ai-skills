@@ -16,7 +16,7 @@ cardctl launch <card.md> --pick   # choose from the card's recent sessions (term
 cardctl launch <card.md> -d       # start in bypassPermissions mode (skip approvals)
 cardctl link   <card.md>          # pin the newest session id under the card's folder (--force to overwrite)
 cardctl new    <slug> --title …   # scaffold a card in the Domain vault's Cards/ folder
-cardctl reconcile [--apply]       # archive folders of cards marked archived/done (R9; dry-run by default)
+cardctl reconcile [--apply]       # file folders of cards marked archived (R9; done is left in place)
 cardctl which [folder] [--record] # which card owns a folder (reverse lookup; powers the SessionStart hook)
 ```
 
@@ -73,7 +73,11 @@ the fix for the old `aiw`-roots-at-repo-top behaviour; launch via the card inste
 
 ### `launch`
 
-1. Parses the card's frontmatter (`paths`, `sessionId`).
+1. Parses the card's frontmatter (`paths`, `sessionId`). **If the primary path (`paths[0]`, the
+   activity folder) doesn't exist yet, it's created** (+ a stub README) — so a GUI-created card
+   (new note in `Cards/`) launches cleanly: make a card → ▶ Launch → folder created + session
+   starts, no `cardctl new` needed. (Only created when the parent dir exists, so a typo isn't
+   fabricated deep.)
 2. **Picks the session (R14 precedence):** `--new` → fresh; else pinned `sessionId`; else the
    **newest session created under the card's primary context folder** (`--pick` lists them with
    timestamps + a first-message preview to choose); else fresh.

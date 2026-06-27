@@ -131,6 +131,24 @@ def origin_of_session(sid):
     return None
 
 
+def ensure_primary_folder(fm):
+    """If the card's primary path (paths[0], the activity folder) doesn't exist yet, create it
+    (+ a stub README) so a GUI-created card launches cleanly — make a card, click ▶, work.
+    Only when the parent already exists, so a typo'd path isn't fabricated deep."""
+    paths = fm.get("paths") or []
+    if not paths:
+        return
+    prim = Path(expand(paths[0]))
+    if prim.exists() or not prim.parent.is_dir():
+        return
+    prim.mkdir()
+    title = str(fm.get("title") or prim.name).strip().strip("\"'")
+    readme = prim / "README.md"
+    if not readme.exists():
+        readme.write_text(f"# {title}\n\nActivity folder — sessions root here; working state lives here.\n")
+    print(f"  created activity folder {prim}")
+
+
 def build_workspace(card_path, fm, sid, dangerous=False):
     paths = [expand(p) for p in (fm.get("paths") or [])]
 
@@ -244,6 +262,7 @@ def resolve_session(fm, args):
 
 def cmd_launch(args):
     fm, _ = read_card(args.card)
+    ensure_primary_folder(fm)  # GUI-created card with no folder yet → create it, then launch
     sid, mode = resolve_session(fm, args)
     ws, folders = build_workspace(args.card, fm, sid, dangerous=args.dangerous)
 
@@ -350,10 +369,12 @@ def cmd_new(args):
 
 
 def cmd_reconcile(args):
-    """R9: card status → disk. For cards marked archived/done, move their `active/<x>`
-    folder to `archive/YYYY-MM-<x>` in that task repo and update the card's path.
+    """R9: card status → disk. Only `archived` is filed — for cards marked **archived**,
+    move their `active/<x>` folder to `archive/YYYY-MM-<x>` and update the card's path.
+    `done` is deliberately NOT filed: it's complete-but-on-disk (off the board, folder
+    stays in active/, trivially reopenable). Archiving is a separate, explicit step.
     Cross-repo: cards live in the vault, folders in the task repos. Dry-run by default."""
-    closing = {"archived", "done"}
+    closing = {"archived"}
     prefix = datetime.date.today().strftime("%Y-%m-")
 
     cards = []
@@ -560,7 +581,7 @@ def main():
     pn.set_defaults(func=cmd_new)
 
     pr = sub.add_parser("reconcile",
-                        help="archive folders of cards marked archived/done (R9; dry-run by default)")
+                        help="file folders of cards marked archived (R9; dry-run by default)")
     pr.add_argument("--apply", action="store_true", help="perform the moves (default: dry run)")
     pr.set_defaults(func=cmd_reconcile)
 
