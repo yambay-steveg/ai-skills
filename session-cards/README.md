@@ -1,4 +1,5 @@
 # Session Card System — requirements spec
+<!-- card: /Users/steve/Source/work/yambay-steveg/work-knowledge/Cards/session-card-system.md -->
 
 **Started:** 2026-06-24 (AWST)\
 **Scope:** Requirements only. *What* I need from a card-based work-tracking layer over my Claude Code sessions — tool-agnostic. No build, architecture, or UI decisions here yet.\
@@ -503,13 +504,18 @@ Resolved by dogfooding:
   **resolved**: todos are **checkboxes**, promoted to a `project` card only when they become a
   stream of work (R1 resolved note + *Todos & ongoing work*). No third card tier needed.
 
+**Plan of attack (in order, 2026-06-28):**
+1. **Productise** the tool — build `cardctl deploy` (below), add an **automated test suite**, and
+   complete the **documentation**. This turns the dogfooded tool into a maintainable product.
+2. **Build the custom Kanban board** (the drag-board item further down).
+
 Still open, for a later pass:
 
-- **Single-source the deployable surfaces (the principle's teeth) — NEXT BUILD.** Several
-  surfaces now exist as hand-copied *duplicates* across the two vaults / `~/bin`, and they drift
-  every time we change one. Per the "one management home" principle (R10), give each a **canonical
-  source under `ai-skills/session-cards/deploy/`** and add **`cardctl deploy <work|personal|all>`**
-  to push them out. The surfaces to single-source:
+- **Productise: `cardctl deploy` + automated tests + docs — NEXT BUILD.**
+  - **`cardctl deploy <work|personal|all>`** — single-source the deployable surfaces. Several now
+    exist as hand-copied *duplicates* across the two vaults / `~/bin` and drift on every change. Per
+    the "one management home" principle (R10), give each a **canonical source under
+    `ai-skills/session-cards/deploy/`** and have `deploy` push them out. Surfaces to single-source:
   - `Cards/board.base` (the Bases board) → each vault's `Cards/`
   - `Templates/card.md` (card template, incl. `## Sessions`) → each vault's `Templates/`
   - Shell Commands `data.json` (4 cardctl commands) → each vault's `.obsidian/plugins/obsidian-shellcommands/`
@@ -518,11 +524,22 @@ Still open, for a later pass:
   - `bin/session-start-hook.sh` → `~/bin/` (already sourced from `ai-skills/bin/`)
   - `bin/cardctl` → `~/bin/` (already sourced from `ai-skills/session-cards/`)
 
-  Design notes: `deploy` should be idempotent and safe (back up / merge `.obsidian` JSON rather
-  than overwrite; never touch a vault's notes, only the surfaces). Until built, board/template/
-  button/Templater/hook changes must be hand-copied work↔personal or they drift.
-- **Drag-board UX (roadmap, not now)** — Bases has no native drag-board yet. Options when the
-  itch arrives, in rough order of appeal:
+    Design notes: `deploy` should be idempotent and safe (back up / merge `.obsidian` JSON rather
+    than overwrite; never touch a vault's notes, only the surfaces). Until built, board/template/
+    button/Templater/hook changes must be hand-copied work↔personal or they drift.
+  - **Automated tests** — `cardctl` has only ever been hand-tested. Add a **pytest suite**
+    (`ai-skills/session-cards/tests/`; pytest is already in the repo) covering: `parse_fm`,
+    `find_card_for`/`which` (+ cache), `link` (pin precedence + `## Sessions` history + dedup),
+    `reconcile` (dry-run; closing=archived only; shared-folder skip), `ensure_primary_folder`, and
+    `deploy`. Pure-logic where possible; use temp dirs / fixtures, no real vault writes.
+  - **Documentation** — make sure `cardctl.md`, this spec, and the operating note reflect the
+    final surface; a `--help` that matches; and the deploy/test workflow is written down.
+  - **Known wrinkle to fix:** the `which --record` cache marker (`<!-- card: … -->`) writes into the
+    folder's `README.md`. That's fine for stub activity folders, but it **leaked into this spec**
+    (line 2) because this card's folder *is* `ai-skills/session-cards`. Consider a dedicated
+    `.card` dotfile, or only writing the marker when the README looks like a stub.
+- **Custom Kanban board — PHASE 2 (after productising).** Bases has no native drag-board yet.
+  Options, in rough order of appeal:
   1. A **bespoke VS Code extension** that renders a Kanban over the card files **and** triggers
      `cardctl` (open folders + resume session) — this is the natural eventual UI because, unlike
      any off-the-shelf board, a board *I own inside VS Code* can fire the launcher (closes the
