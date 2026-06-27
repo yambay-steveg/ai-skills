@@ -1,0 +1,70 @@
+[
+  {
+    "label": "\u25b6 Launch session",
+    "icon": "",
+    "style": "primary",
+    "class": "",
+    "cssStyle": "",
+    "backgroundImage": "",
+    "tooltip": "Resume the card's latest/pinned session in VS Code",
+    "id": "launch-card",
+    "hidden": false,
+    "actions": [
+      {
+        "type": "command",
+        "command": "obsidian-shellcommands:shell-command-mnosc79dtm"
+      }
+    ]
+  },
+  {
+    "label": "\u2726 New session",
+    "icon": "",
+    "style": "default",
+    "class": "",
+    "cssStyle": "",
+    "backgroundImage": "",
+    "tooltip": "Start a fresh session in this card's folders",
+    "id": "new-session",
+    "hidden": false,
+    "actions": [
+      {
+        "type": "command",
+        "command": "obsidian-shellcommands:shell-command-scnewsess01"
+      }
+    ]
+  },
+  {
+    "label": "\u26a1 Launch (skip approvals)",
+    "icon": "",
+    "style": "destructive",
+    "class": "",
+    "cssStyle": "",
+    "backgroundImage": "",
+    "tooltip": "Launch in bypassPermissions mode",
+    "id": "launch-dangerous",
+    "hidden": false,
+    "actions": [
+      {
+        "type": "command",
+        "command": "obsidian-shellcommands:shell-command-scdanger001"
+      }
+    ]
+  },
+  {
+    "label": "\ud83d\udccc Pin latest",
+    "icon": "",
+    "style": "default",
+    "class": "",
+    "cssStyle": "",
+    "backgroundImage": "",
+    "tooltip": "Pin the newest session id into this card",
+    "id": "pin-session",
+    "hidden": false,
+    "actions": [
+      {
+        "type": "command",
+        "command": "obsidian-shellcommands:shell-command-scpinsess01"
+      }
+    ]
+  }
+]

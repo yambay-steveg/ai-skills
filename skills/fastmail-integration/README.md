@@ -1,5 +1,4 @@
 # Fastmail integration
-<!-- card: /Users/steve/Source/work/yambay-steveg/work-knowledge/Cards/fastmail-integration.md -->
 
 **Started:** 2026-06-27 (AWST)
 
