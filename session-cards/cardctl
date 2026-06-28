@@ -54,6 +54,7 @@ def find_exe(name, fallbacks):
 
 CODE = find_exe("code", ["/opt/homebrew/bin/code", "/usr/local/bin/code"])
 OPEN = find_exe("open", ["/usr/bin/open"])
+OSASCRIPT = find_exe("osascript", ["/usr/bin/osascript"])
 
 PROJECTS = Path.home() / ".claude" / "projects"
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "session-cards"
@@ -267,6 +268,22 @@ def resolve_session(fm, args):
     return None, "new (no prior session)"
 
 
+def activate_vscode():
+    """Bring VS Code to the front before firing the resume URI. The
+    `vscode://anthropic.claude-code/open?session=` URI is delivered to whatever
+    window is frontmost (no window-targeting param exists), so when launched from
+    Obsidian — which is frontmost — the resume can land in the wrong window. This
+    re-asserts VS Code (whose newly-opened window is its front window) as the
+    frontmost app, closing the common case of the race. The deterministic fix
+    (raise the specific window by title) is the separate window-targeting work."""
+    try:
+        subprocess.run([OSASCRIPT, "-e",
+                        'tell application "Visual Studio Code" to activate'],
+                       check=False, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        pass  # best-effort focus nudge; never block the launch on it
+
+
 def cmd_launch(args):
     fm, _ = read_card(args.card)
     ensure_primary_folder(fm)  # GUI-created card with no folder yet → create it, then launch
@@ -278,6 +295,8 @@ def cmd_launch(args):
         print(f"  - {p}")
     subprocess.run([CODE, str(ws)], check=True)
     time.sleep(args.delay)
+    activate_vscode()        # make the new VS Code window frontmost before the URI
+    time.sleep(0.4)          # let the activation settle so the URI lands on it
 
     if sid:
         print(f"resuming session {sid}  ({mode})")
@@ -810,7 +829,7 @@ def main():
                     help="choose from the card's recent sessions (terminal only)")
     pl.add_argument("-d", "--dangerous", action="store_true",
                     help="start the session in bypassPermissions mode (skip approvals)")
-    pl.add_argument("--delay", type=float, default=1.5,
+    pl.add_argument("--delay", type=float, default=3.0,
                     help="seconds to wait after launching VSCode before firing the URI")
     pl.set_defaults(func=cmd_launch)
 
