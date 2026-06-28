@@ -1,0 +1,146 @@
+[
+  {
+    "id": "mnosc79dtm",
+    "platform_specific_commands": {
+      "default": "/Users/steve/bin/cardctl launch {{file_path:absolute}}"
+    },
+    "shells": {},
+    "alias": "Launch card",
+    "icon": null,
+    "confirm_execution": false,
+    "ignore_error_codes": [],
+    "input_contents": {
+      "stdin": null
+    },
+    "output_handlers": {
+      "stdout": {
+        "handler": "ignore",
+        "convert_ansi_code": true
+      },
+      "stderr": {
+        "handler": "notification",
+        "convert_ansi_code": true
+      }
+    },
+    "output_wrappers": {
+      "stdout": null,
+      "stderr": null
+    },
+    "output_channel_order": "stdout-first",
+    "output_handling_mode": "buffered",
+    "execution_notification_mode": null,
+    "events": {},
+    "debounce": null,
+    "command_palette_availability": "enabled",
+    "preactions": [],
+    "variable_default_values": {}
+  },
+  {
+    "id": "scnewsess01",
+    "platform_specific_commands": {
+      "default": "/Users/steve/bin/cardctl launch {{file_path:absolute}} --new"
+    },
+    "shells": {},
+    "alias": "New session on card",
+    "icon": null,
+    "confirm_execution": false,
+    "ignore_error_codes": [],
+    "input_contents": {
+      "stdin": null
+    },
+    "output_handlers": {
+      "stdout": {
+        "handler": "ignore",
+        "convert_ansi_code": true
+      },
+      "stderr": {
+        "handler": "notification",
+        "convert_ansi_code": true
+      }
+    },
+    "output_wrappers": {
+      "stdout": null,
+      "stderr": null
+    },
+    "output_channel_order": "stdout-first",
+    "output_handling_mode": "buffered",
+    "execution_notification_mode": null,
+    "events": {},
+    "debounce": null,
+    "command_palette_availability": "enabled",
+    "preactions": [],
+    "variable_default_values": {}
+  },
+  {
+    "id": "scdanger001",
+    "platform_specific_commands": {
+      "default": "/Users/steve/bin/cardctl launch {{file_path:absolute}} -d"
+    },
+    "shells": {},
+    "alias": "Launch card (skip approvals)",
+    "icon": null,
+    "confirm_execution": false,
+    "ignore_error_codes": [],
+    "input_contents": {
+      "stdin": null
+    },
+    "output_handlers": {
+      "stdout": {
+        "handler": "ignore",
+        "convert_ansi_code": true
+      },
+      "stderr": {
+        "handler": "notification",
+        "convert_ansi_code": true
+      }
+    },
+    "output_wrappers": {
+      "stdout": null,
+      "stderr": null
+    },
+    "output_channel_order": "stdout-first",
+    "output_handling_mode": "buffered",
+    "execution_notification_mode": null,
+    "events": {},
+    "debounce": null,
+    "command_palette_availability": "enabled",
+    "preactions": [],
+    "variable_default_values": {}
+  },
+  {
+    "id": "scpinsess01",
+    "platform_specific_commands": {
+      "default": "/Users/steve/bin/cardctl link {{file_path:absolute}} --force"
+    },
+    "shells": {},
+    "alias": "Pin latest session to card",
+    "icon": null,
+    "confirm_execution": false,
+    "ignore_error_codes": [],
+    "input_contents": {
+      "stdin": null
+    },
+    "output_handlers": {
+      "stdout": {
+        "handler": "ignore",
+        "convert_ansi_code": true
+      },
+      "stderr": {
+        "handler": "notification",
+        "convert_ansi_code": true
+      }
+    },
+    "output_wrappers": {
+      "stdout": null,
+      "stderr": null
+    },
+    "output_channel_order": "stdout-first",
+    "output_handling_mode": "buffered",
+    "execution_notification_mode": null,
+    "events": {},
+    "debounce": null,
+    "command_palette_availability": "enabled",
+    "preactions": [],
+    "variable_default_values": {}
+  }
+]

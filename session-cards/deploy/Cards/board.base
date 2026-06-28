@@ -1,0 +1,67 @@
+filters:
+  or:
+    - type == "project"
+    - type == "program"
+    - type == "activity"
+    - type == "bug"
+    - type == "idea"
+    - type == "decision"
+properties:
+  type:
+    displayName: Type
+  status:
+    displayName: Status
+  summary:
+    displayName: Summary
+  latest:
+    displayName: Latest
+  program:
+    displayName: Program
+  project:
+    displayName: Project
+  sessionId:
+    displayName: Session
+views:
+  - type: cards
+    name: Board
+    filters:
+      and:
+        - status != "archived"
+        - status != "done"
+    groupBy:
+      property: status
+      direction: ASC
+    order:
+      - summary
+      - latest
+      - program
+      - tags
+  - type: table
+    name: By program
+    filters:
+      and:
+        - status != "archived"
+        - status != "done"
+    groupBy:
+      property: program
+      direction: ASC
+    order:
+      - file.name
+      - status
+      - summary
+      - latest
+  - type: table
+    name: Done
+    filters: status == "done"
+    order:
+      - file.name
+      - summary
+      - latest
+      - program
+  - type: table
+    name: Archived
+    filters: status == "archived"
+    order:
+      - file.name
+      - summary
+      - program

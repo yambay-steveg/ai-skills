@@ -1,5 +1,4 @@
 # Session Card System — requirements spec
-<!-- card: /Users/steve/Source/work/yambay-steveg/work-knowledge/Cards/session-card-system.md -->
 
 **Started:** 2026-06-24 (AWST)\
 **Scope:** Requirements only. *What* I need from a card-based work-tracking layer over my Claude Code sessions — tool-agnostic. No build, architecture, or UI decisions here yet.\
@@ -505,39 +504,28 @@ Resolved by dogfooding:
   stream of work (R1 resolved note + *Todos & ongoing work*). No third card tier needed.
 
 **Plan of attack (in order, 2026-06-28):**
-1. **Productise** the tool — build `cardctl deploy` (below), add an **automated test suite**, and
-   complete the **documentation**. This turns the dogfooded tool into a maintainable product.
-2. **Build the custom Kanban board** (the drag-board item further down).
+1. ✅ **Productise** the tool — `cardctl deploy`, a pytest suite, and docs. *Done 2026-06-28.*
+2. **Build the custom Kanban board** (the drag-board item further down) — **NEXT**.
 
-Still open, for a later pass:
+✅ **Productise — DONE (2026-06-28).**
 
-- **Productise: `cardctl deploy` + automated tests + docs — NEXT BUILD.**
-  - **`cardctl deploy <work|personal|all>`** — single-source the deployable surfaces. Several now
-    exist as hand-copied *duplicates* across the two vaults / `~/bin` and drift on every change. Per
-    the "one management home" principle (R10), give each a **canonical source under
-    `ai-skills/session-cards/deploy/`** and have `deploy` push them out. Surfaces to single-source:
-  - `Cards/board.base` (the Bases board) → each vault's `Cards/`
-  - `Templates/card.md` (card template, incl. `## Sessions`) → each vault's `Templates/`
-  - Shell Commands `data.json` (4 cardctl commands) → each vault's `.obsidian/plugins/obsidian-shellcommands/`
-  - Meta Bind `data.json` (4 button templates) → each vault's `.obsidian/plugins/obsidian-meta-bind-plugin/`
-  - Templater folder-template config (`Cards/` → `Templates/card.md`) → each vault's `.obsidian/plugins/templater-obsidian/data.json` (merge, don't clobber other settings)
-  - `bin/session-start-hook.sh` → `~/bin/` (already sourced from `ai-skills/bin/`)
-  - `bin/cardctl` → `~/bin/` (already sourced from `ai-skills/session-cards/`)
+- **`cardctl deploy <work|personal|all>`** — single-sources every deployable surface. Canonical
+  copies live under `ai-skills/session-cards/deploy/`; `deploy` pushes them out (dry-run by default,
+  `--apply` to write; idempotent). Surfaces: `Cards/board.base`, `Templates/card.md` (copied); the
+  three `.obsidian/*.json` plugin files (Shell Commands, Meta Bind buttons, Templater folder-template
+  — **merged by id/key, never clobbering other settings or notes**); and `~/bin/cardctl` +
+  `~/bin/session-start-hook.sh` (copied, global). Full table + safety notes: `cardctl.md`.
+- **Automated tests** — a **pytest suite** in `ai-skills/session-cards/tests/` (24 tests, hermetic):
+  `parse_fm`, `find_card_for`/`which` (+ cache + stale validation), `resolve_session` precedence,
+  `link` (pin + `## Sessions` history + dedup), `reconcile` (dry-run; archived-only; shared-folder
+  skip), `ensure_primary_folder`, and `deploy` (merge helpers + temp-vault application). Run with
+  `python3 -m pytest tests/ -q` from `session-cards/`.
+- **Documentation** — `cardctl.md` documents `deploy` + the test workflow; `--help` matches (argparse);
+  this spec updated.
+  the folder's `README.md` — fine for stub activity folders, but it **leaked into this spec** (line 2)
+  because this card's folder *is* `ai-skills/session-cards`. Consider a dedicated `.card` dotfile, or
+  only writing the marker when the README looks like a stub. (Carried to "Not yet built" in `cardctl.md`.)
 
-    Design notes: `deploy` should be idempotent and safe (back up / merge `.obsidian` JSON rather
-    than overwrite; never touch a vault's notes, only the surfaces). Until built, board/template/
-    button/Templater/hook changes must be hand-copied work↔personal or they drift.
-  - **Automated tests** — `cardctl` has only ever been hand-tested. Add a **pytest suite**
-    (`ai-skills/session-cards/tests/`; pytest is already in the repo) covering: `parse_fm`,
-    `find_card_for`/`which` (+ cache), `link` (pin precedence + `## Sessions` history + dedup),
-    `reconcile` (dry-run; closing=archived only; shared-folder skip), `ensure_primary_folder`, and
-    `deploy`. Pure-logic where possible; use temp dirs / fixtures, no real vault writes.
-  - **Documentation** — make sure `cardctl.md`, this spec, and the operating note reflect the
-    final surface; a `--help` that matches; and the deploy/test workflow is written down.
-  - **Known wrinkle to fix:** the `which --record` cache marker (`<!-- card: … -->`) writes into the
-    folder's `README.md`. That's fine for stub activity folders, but it **leaked into this spec**
-    (line 2) because this card's folder *is* `ai-skills/session-cards`. Consider a dedicated
-    `.card` dotfile, or only writing the marker when the README looks like a stub.
 - **Custom Kanban board — PHASE 2 (after productising).** Bases has no native drag-board yet.
   Options, in rough order of appeal:
   1. A **bespoke VS Code extension** that renders a Kanban over the card files **and** triggers

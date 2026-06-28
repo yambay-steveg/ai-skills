@@ -21,6 +21,8 @@ Commands:
   cardctl launch <card.md> --new    Force a fresh session even if the card pins one.
   cardctl link   <card.md>          Find the newest Claude session under the card's folder and
                                     write its id back into the card's `sessionId` frontmatter.
+  cardctl set-status <card.md> <s>  Set the card's lifecycle status (the single writer of that
+                                    field; surfaces like the board delegate here, never edit files).
 
 macOS only for now. `code` and `open` are resolved by absolute path (works under GUI launchers
 like Obsidian Shell Commands, which run with a minimal PATH).
@@ -65,6 +67,11 @@ CARDS_DIRS = {
 }
 BUTTON_BAR = ("`BUTTON[launch-card]` `BUTTON[new-session]` "
               "`BUTTON[launch-dangerous]` `BUTTON[pin-session]`")
+
+# The card lifecycle vocabulary. `set-status` accepts only these; `reconcile`
+# keys off `archived`. Surfaces (e.g. the board) must change status through
+# cardctl, not by writing the file, so this stays the single source of truth.
+CARD_STATUSES = ["backlog", "in-progress", "on-hold", "done", "archived"]
 
 
 def die(msg):
@@ -361,6 +368,57 @@ def cmd_link(args):
           + (f" (previous {old} kept in history)" if old and old != sid else ""))
 
 
+def card_under_cards_dirs(path):
+    """True if `path` resolves inside one of the configured Cards/ folders — the
+    guard that keeps `set-status` (and any surface delegating to it) from editing
+    arbitrary files."""
+    target = expand(path)
+    return any(target == expand(cd) or target.startswith(expand(cd) + os.sep)
+               for cd in CARDS_DIRS.values())
+
+
+def set_status_in_text(text, status):
+    """Return `text` with its frontmatter `status:` set to `status`, leaving the
+    rest byte-for-byte (surgical single-line edit — body, other fields, quoting and
+    key order untouched, so the vault git diff stays minimal). Replaces a `status:`
+    line in place; if the frontmatter has none, inserts one before the closing `---`."""
+    out, in_fm, seen_open, wrote = [], False, False, False
+    for ln in text.splitlines(keepends=True):
+        if ln.strip() == "---":
+            if not seen_open:
+                seen_open = in_fm = True
+                out.append(ln); continue
+            if in_fm:
+                if not wrote:
+                    out.append(f"status: {status}\n"); wrote = True
+                in_fm = False
+                out.append(ln); continue
+        if in_fm and ln.startswith("status:"):
+            out.append(f"status: {status}\n"); wrote = True; continue
+        out.append(ln)
+    return "".join(out)
+
+
+def cmd_set_status(args):
+    """Set a card's lifecycle `status` — the one board-owned field cardctl writes on
+    demand (R10: surfaces never edit the card file directly; they go through here).
+    Flips the field only; folder moves for `archived` stay with `reconcile`."""
+    status = args.status.strip()
+    if status not in CARD_STATUSES:
+        die(f"invalid status {status!r} (choose: {', '.join(CARD_STATUSES)})")
+    if not Path(args.card).is_file():
+        die(f"{args.card}: no such card")
+    if not card_under_cards_dirs(args.card):
+        die(f"{args.card}: not inside a configured Cards/ folder")
+    fm, text = read_card(args.card)
+    old = str(fm.get("status") or "").strip()
+    if old == status:
+        print(f"{Path(args.card).name}: status already {status}")
+        return
+    Path(args.card).write_text(set_status_in_text(text, status))
+    print(f"{Path(args.card).name}: status {old or '?'} → {status}")
+
+
 def cmd_new(args):
     cards = CARDS_DIRS.get(args.domain)
     if cards is None:
@@ -388,9 +446,13 @@ def cmd_new(args):
             print(f"cardctl: warning — path does not exist yet: {p}", file=sys.stderr)
 
     # Human glance fields (shown on the board) first; plumbing (cardctl) last.
+    # json.dumps gives YAML-safe double-quoting; ensure_ascii=False keeps em-dashes etc.
+    # literal in the file (YAML would parse \uXXXX, but the raw card stays readable).
+    def yq(s):
+        return json.dumps(s or "", ensure_ascii=False)
     fm = [f"type: {args.type}", f"title: {args.title}", f"status: {args.status}",
-          f"summary: {json.dumps(args.summary or '')}",
-          f"latest: {json.dumps(args.latest or '')}",
+          f"summary: {yq(args.summary)}",
+          f"latest: {yq(args.latest)}",
           f"tags: [{', '.join(tags)}]"]
     if args.program:
         fm.append(f'program: "[[{args.program}]]"')
@@ -487,7 +549,161 @@ def cmd_reconcile(args):
         print("\n(dry run — rerun with --apply to perform the moves)")
 
 
-CACHE_RE = re.compile(r"<!--\s*card:\s*(.+?)\s*-->")
+# ── deploy ────────────────────────────────────────────────────────────────────
+# Single-source the deployable surfaces (R10 "one management home"): the canonical
+# copies live in this repo under deploy/; `deploy` pushes them out to each vault and
+# to ~/bin. Surface files (board.base, card.md) are copied; the shared .obsidian/*.json
+# files are MERGED by id/key so a vault's own settings (and other plugins' config) are
+# never clobbered. Idempotent — only writes when content actually changes.
+
+# Source tree: the repo copy when run from it, else the canonical work home (R10).
+REPO = Path(__file__).resolve().parent
+if not (REPO / "deploy").is_dir():
+    REPO = Path.home() / "Source/work/yambay-steveg/ai-skills/session-cards"
+DEPLOY_SRC = REPO / "deploy"
+CARDCTL_SRC = REPO / "cardctl"
+HOOK_SRC = REPO.parent / "bin" / "session-start-hook.sh"
+BIN = Path.home() / "bin"
+VAULT_ROOTS = {d: cards.parent for d, cards in CARDS_DIRS.items()}
+
+
+def _load_json(p):
+    p = Path(p)
+    return json.loads(p.read_text()) if p.is_file() else {}
+
+
+def merge_list_by_key(existing, ours, key="id"):
+    """Merge `ours` into `existing` by `key`: our version replaces a match in place,
+    new items append, everything else is preserved untouched. Returns (merged, changed)."""
+    ours_by = {it[key]: it for it in ours}
+    out, seen = [], set()
+    for it in existing:
+        k = it.get(key)
+        if k in ours_by:
+            out.append(ours_by[k]); seen.add(k)
+        else:
+            out.append(it)
+    for it in ours:
+        if it[key] not in seen:
+            out.append(it)
+    return out, out != existing
+
+
+def merge_templater(existing, frag):
+    """Ensure the folder-template wiring is present without clobbering other Templater
+    settings. Sets the enabling flags, keeps an existing templates_folder if already set,
+    and merges our folder_templates entry by `folder`. Returns (merged, changed)."""
+    out = dict(existing)
+    out.setdefault("templates_folder", frag["templates_folder"])
+    out["trigger_on_file_creation"] = frag["trigger_on_file_creation"]
+    out["enable_folder_templates"] = frag["enable_folder_templates"]
+    ft, ours = list(out.get("folder_templates") or []), frag["folder_templates"]
+    out["folder_templates"], _ = merge_list_by_key(ft, ours, key="folder")
+    return out, out != existing
+
+
+# Each surface: (label, dest-relative-to-vault, kind, source). kind drives the merge.
+DEPLOY_SURFACES = [
+    ("board.base",     "Cards/board.base",       "copy", "Cards/board.base"),
+    ("card template",  "Templates/card.md",      "copy", "Templates/card.md"),
+    ("shell commands", ".obsidian/plugins/obsidian-shellcommands/data.json",
+     "array:shell_commands", "fragments/shellcommands.commands.json"),
+    ("meta-bind buttons", ".obsidian/plugins/obsidian-meta-bind-plugin/data.json",
+     "array:buttonTemplates", "fragments/metabind.buttons.json"),
+    ("templater config", ".obsidian/plugins/templater-obsidian/data.json",
+     "templater", "fragments/templater.folder-template.json"),
+]
+
+
+def _deploy_surface(vault, dest_rel, kind, src_rel, apply):
+    """Compute (and optionally apply) one surface. Returns 'create' | 'update' |
+    'unchanged' | a 'skip: …' note."""
+    dst = vault / dest_rel
+    src = DEPLOY_SRC / src_rel
+    if not src.is_file():
+        return f"skip: missing source {src}"
+
+    if kind == "copy":
+        new_text = src.read_text()
+        if dst.is_file() and dst.read_text() == new_text:
+            return "unchanged"
+        action = "update" if dst.is_file() else "create"
+        if apply:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(new_text)
+        return action
+
+    # JSON merge surfaces — never clobber sibling settings.
+    if kind.startswith("array:") and not dst.parent.is_dir():
+        return "skip: plugin not installed"
+    existing = _load_json(dst)
+    ours = json.loads(src.read_text())
+    if kind.startswith("array:"):
+        prop = kind.split(":", 1)[1]
+        merged, changed = merge_list_by_key(existing.get(prop, []), ours)
+        new = dict(existing); new[prop] = merged
+    elif kind == "templater":
+        new, changed = merge_templater(existing, ours)
+    else:
+        return f"skip: unknown kind {kind}"
+    if not changed:
+        return "unchanged"
+    action = "update" if dst.is_file() else "create"
+    if apply:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(json.dumps(new, indent=2) + "\n")
+    return action
+
+
+def _deploy_bin(apply):
+    """Sync the engine + hook to ~/bin (global, not per-domain). Returns [(name, action)]."""
+    out = []
+    for src, name in [(CARDCTL_SRC, "cardctl"), (HOOK_SRC, "session-start-hook.sh")]:
+        dst = BIN / name
+        if not Path(src).is_file():
+            out.append((name, f"skip: missing source {src}")); continue
+        new_text = Path(src).read_text()
+        if dst.is_file() and dst.read_text() == new_text:
+            out.append((name, "unchanged")); continue
+        action = "update" if dst.is_file() else "create"
+        if apply:
+            BIN.mkdir(parents=True, exist_ok=True)
+            dst.write_text(new_text)
+            os.chmod(dst, 0o755)
+        out.append((name, action))
+    return out
+
+
+def cmd_deploy(args):
+    if not DEPLOY_SRC.is_dir():
+        die(f"deploy sources not found at {DEPLOY_SRC} (run from the ai-skills repo)")
+    domains = list(CARDS_DIRS) if args.domain == "all" else [args.domain]
+    tag = "APPLY" if args.apply else "DRY "
+    any_change = False
+
+    for d in domains:
+        vault = VAULT_ROOTS[d]
+        print(f"\n{d}  ({vault})")
+        if not vault.is_dir():
+            print(f"  skip: vault not found"); continue
+        for label, dest_rel, kind, src_rel in DEPLOY_SURFACES:
+            action = _deploy_surface(vault, dest_rel, kind, src_rel, args.apply)
+            any_change |= action in ("create", "update")
+            print(f"  {tag}  {action:9}  {label:18}  {dest_rel}")
+
+    print(f"\n~/bin  ({BIN})")
+    for name, action in _deploy_bin(args.apply):
+        any_change |= action in ("create", "update")
+        print(f"  {tag}  {action:9}  {name}")
+
+    if not args.apply and any_change:
+        print("\n(dry run — rerun with --apply to write the changes)")
+    elif not any_change:
+        print("\ndeploy: everything already up to date.")
+
+
+CACHE_RE = re.compile(r"<!--\s*card:\s*(.+?)\s*-->")   # legacy README marker (migrated away from)
+CARD_DOTFILE = ".card"
 
 
 def card_matches_folder(fm, folder):
@@ -502,16 +718,16 @@ def card_matches_folder(fm, folder):
 
 def find_card_for(folder):
     """Reverse-lookup the card whose `paths` cover `folder` (R: session→card link).
-    Fast path: a validated `<!-- card: PATH -->` cache line in folder/README.md.
+    Fast path: a validated card path in a `.card` dotfile in the folder.
     Fallback: scan every Cards/ dir. Single source of truth = the cards' `paths`."""
     folder = expand(folder)
-    readme = Path(folder) / "README.md"
-    if readme.is_file():
-        m = CACHE_RE.search(readme.read_text())
-        if m and Path(m.group(1)).is_file():
-            fm, _ = read_card(m.group(1))
+    dot = Path(folder) / CARD_DOTFILE
+    if dot.is_file():
+        cached = dot.read_text().strip()
+        if cached and Path(cached).is_file():
+            fm, _ = read_card(cached)
             if card_matches_folder(fm, folder):   # validate — cache can go stale (cross-repo)
-                return Path(m.group(1))
+                return Path(cached)
     for cd in CARDS_DIRS.values():
         if cd.is_dir():
             for c in sorted(cd.glob("*.md")):
@@ -522,20 +738,20 @@ def find_card_for(folder):
 
 
 def write_card_cache(folder, card_path):
-    """Record/refresh the `<!-- card: … -->` back-pointer in folder/README.md.
-    Idempotent — no write (no git churn) if the correct marker is already present."""
+    """Record/refresh the card back-pointer in a dedicated `.card` dotfile — a local cache that
+    never touches the folder's notes (R10: 'never touch a vault's notes'). Idempotent (no write,
+    no git churn, if already correct). Also migrates away any legacy `<!-- card: … -->` marker an
+    older cardctl wrote into the folder's README.md."""
+    dot = Path(folder) / CARD_DOTFILE
+    if not (dot.is_file() and dot.read_text().strip() == str(card_path)):
+        dot.write_text(str(card_path) + "\n")
+    # one-time migration: strip a legacy marker so it stops polluting real READMEs/specs.
     readme = Path(folder) / "README.md"
-    marker = f"<!-- card: {card_path} -->"
     if readme.is_file():
-        existing = readme.read_text()
-        if marker in existing:
-            return
-        lines = [l for l in existing.splitlines() if not CACHE_RE.search(l)]
-        idx = next((i + 1 for i, l in enumerate(lines) if l.startswith("# ")), 0)
-        lines.insert(idx, marker)
-        readme.write_text("\n".join(lines) + "\n")
-    else:
-        readme.write_text(marker + "\n")
+        text = readme.read_text()
+        if CACHE_RE.search(text):
+            kept = [l for l in text.splitlines() if not CACHE_RE.search(l)]
+            readme.write_text("\n".join(kept) + ("\n" if text.endswith("\n") else ""))
 
 
 def open_actions(folder, limit=6):
@@ -627,10 +843,23 @@ def main():
     pn.add_argument("--force", action="store_true", help="overwrite an existing card")
     pn.set_defaults(func=cmd_new)
 
+    ps = sub.add_parser("set-status", help="set a card's lifecycle status (the board-owned field)")
+    ps.add_argument("card")
+    ps.add_argument("status", help=f"one of: {', '.join(CARD_STATUSES)}")
+    ps.set_defaults(func=cmd_set_status)
+
     pr = sub.add_parser("reconcile",
                         help="file folders of cards marked archived (R9; dry-run by default)")
     pr.add_argument("--apply", action="store_true", help="perform the moves (default: dry run)")
     pr.set_defaults(func=cmd_reconcile)
+
+    pd = sub.add_parser("deploy",
+                        help="push the canonical surfaces (board/template/buttons/hook/engine) "
+                             "to a vault + ~/bin (R10; dry-run by default)")
+    pd.add_argument("domain", choices=list(CARDS_DIRS) + ["all"],
+                    help="which vault to deploy to (or 'all')")
+    pd.add_argument("--apply", action="store_true", help="write the changes (default: dry run)")
+    pd.set_defaults(func=cmd_deploy)
 
     pw = sub.add_parser("which", help="which card owns a folder (reverse lookup; for the session-start hook)")
     pw.add_argument("folder", nargs="?", help="folder to resolve (default: cwd)")

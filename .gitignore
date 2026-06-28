@@ -42,5 +42,8 @@ Thumbs.db
 htmlcov/
 .tox/
 
+# session-card reverse-lookup cache (regenerable; see session-cards/cardctl `which --record`)
+.card
+
 # Environment variables
 *.env.local

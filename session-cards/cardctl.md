@@ -4,8 +4,9 @@ Implements R12 (launch) + session-id capture from the spec (`README.md`). Depend
 Python 3 (no PyYAML — a minimal frontmatter parser for the card schema). macOS for now.
 
 **Install / source of truth:** `ai-skills/session-cards/cardctl` is the source; `~/bin/cardctl`
-is the on-PATH copy. After editing, re-copy:
-`cp ~/Source/work/yambay-steveg/ai-skills/session-cards/cardctl ~/bin/cardctl`.
+is the on-PATH copy. After editing, **`cardctl deploy all --apply`** syncs the engine, the hook,
+and every per-vault surface from this repo (see [`deploy`](#deploy--single-source-the-surfaces-r10)
+below) — no hand-copying.
 
 ## Commands
 
@@ -17,14 +18,18 @@ cardctl launch <card.md> -d       # start in bypassPermissions mode (skip approv
 cardctl link   <card.md> --current   # pin the running session + log it under ## Sessions
 cardctl link   <card.md> --session ID # pin a specific session id (e.g. one that ran elsewhere)
 cardctl new    <slug> --title …   # scaffold a card in the Domain vault's Cards/ folder
+cardctl set-status <card.md> <s>  # set lifecycle status (single writer of the field; surfaces delegate here)
 cardctl reconcile [--apply]       # file folders of cards marked archived (R9; done is left in place)
 cardctl which [folder] [--record] # which card owns a folder (reverse lookup; powers the SessionStart hook)
+cardctl deploy <work|personal|all> [--apply]  # push the canonical surfaces to a vault + ~/bin (R10)
 ```
 
 `cardctl which` resolves the card whose `paths` cover a folder (default: cwd) — used by the
 SessionStart hook (`~/bin/session-start-hook.sh`) to make every session card-aware. `--record`
-self-caches the link as a `<!-- card: … -->` line in the folder README (validated, single source
-of truth = the cards' `paths`).
+self-caches the link in a dedicated **`.card` dotfile** in the folder (validated on read; single
+source of truth stays the cards' `paths`). The dotfile is a local cache — never written into the
+folder's notes — and an older cardctl's legacy `<!-- card: … -->` README marker is stripped on next
+record. (`.card` is gitignored in this repo.)
 
 ## `reconcile` (R9 — card status → disk)
 
@@ -34,6 +39,56 @@ its task repo (`git mv` + an `Archive:` commit) and updates the card's path. Cro
 the vault, folder in the task repo. **Dry-run by default** — add `--apply` to perform the moves.
 Skips a folder still referenced by a *live* (non-archived) card (R14 Pattern B). Run it at session
 start (or on demand) to let board status drive the filesystem.
+
+## `deploy` — single-source the surfaces (R10)
+
+Per the **one-management-home** principle (R10): the card system is maintained once, in this repo
+(`ai-skills/session-cards/`), then *deployed* to each Domain vault and to `~/bin`. Without it, the
+board/template/button/Templater/hook config drifts as it's hand-copied work↔personal.
+
+```bash
+cardctl deploy work          # dry-run: show what would change in the work vault + ~/bin
+cardctl deploy all --apply   # write changes to BOTH vaults + ~/bin
+```
+
+**Canonical sources** live under `ai-skills/session-cards/deploy/`:
+
+| Surface | Source | Dest (per vault, except ~/bin) | How |
+| --- | --- | --- | --- |
+| Bases board | `deploy/Cards/board.base` | `Cards/board.base` | copy |
+| Card template | `deploy/Templates/card.md` | `Templates/card.md` | copy |
+| Shell Commands | `deploy/fragments/shellcommands.commands.json` | `.obsidian/plugins/obsidian-shellcommands/data.json` | **merge** our 4 commands into `shell_commands` by `id` |
+| Meta Bind buttons | `deploy/fragments/metabind.buttons.json` | `.obsidian/plugins/obsidian-meta-bind-plugin/data.json` | **merge** our 4 buttons into `buttonTemplates` by `id` |
+| Templater | `deploy/fragments/templater.folder-template.json` | `.obsidian/plugins/templater-obsidian/data.json` | **merge** the `Cards`→`Templates/card.md` folder-template + enabling flags |
+| Engine | `cardctl` | `~/bin/cardctl` | copy (+ `chmod 755`) — global, once |
+| SessionStart hook | `../bin/session-start-hook.sh` | `~/bin/session-start-hook.sh` | copy (+ `chmod 755`) — global, once |
+
+**Safety:** **dry-run by default** (`--apply` to write). Idempotent — only writes when content
+actually changes (re-running a clean deploy reports *everything up to date*). The three
+`.obsidian/*.json` files are **merged, never clobbered** — our commands/buttons/folder-template are
+replaced-by-id/key while every other plugin setting (and any unrelated commands) is preserved. Only
+the listed surfaces are touched — **never a vault's notes**. Editing a canonical source under
+`deploy/` and running `deploy all --apply` is the supported way to change the surfaces.
+
+**Editing surfaces:** change the file under `deploy/`, then `cardctl deploy all --apply`. (For the
+Obsidian-plugin JSON, the easy authoring loop is: tweak it once in a vault via the Obsidian UI,
+re-extract the fragment into `deploy/fragments/`, then deploy out to the other vault.)
+
+## Tests
+
+A pytest suite lives in `ai-skills/session-cards/tests/` — run from the `session-cards/` dir:
+
+```bash
+python3 -m pytest tests/ -q
+```
+
+It loads the extension-less `cardctl` as a module (`conftest.py`) and covers `parse_fm`,
+`find_card_for`/`which` (+ the `.card` cache, stale-cache validation, and legacy-marker
+migration), `resolve_session` pin
+precedence, `link` (pin + `## Sessions` history + dedup), `reconcile` (dry-run, archived-only,
+shared-folder skip), `ensure_primary_folder`, and `deploy` (the merge helpers + surface application
+against a temp vault, asserting foreign settings survive). All hermetic — temp dirs / fixtures,
+no real vault or `~/.claude/projects` writes.
 
 ## Bringing existing work into the system (import process)
 
@@ -147,10 +202,15 @@ Note: `cardctl` only reads `paths`/`sessionId`; the rest are for the board/graph
   `--pick` chooser; `-d` bypassPermissions. Driven from Obsidian via the 4-button bar.
 - ✅ `link` — captures newest session id, preserves the rest of the card file (`--force` to repin).
 - ✅ `new` — scaffolds a card (`--make-folder` creates the activity folder).
-- ✅ `reconcile` — archives folders of archived/done cards (dry-run + controlled `--apply` test).
+- ✅ `set-status` — surgical `status:` rewrite; validates the lifecycle vocabulary and refuses any
+  card outside a configured `Cards/` folder. The single writer of the field — the board delegates here.
+- ✅ `reconcile` — archives folders of archived cards (dry-run + controlled `--apply` test).
+- ✅ `deploy` — single-sources every surface to both vaults + `~/bin`; idempotent, merge-safe;
+  covered by the pytest suite and run end-to-end (`deploy all --apply` → clean re-run).
+- ✅ **pytest suite** (`tests/`) — 31 hermetic tests across all commands + the deploy merges.
 
 ## Not yet built (next)
-- **Migration:** lives in the task folder for now; move to `~/bin` + the ai-skills repo `bin/`
-  alongside `aiw`/`aip` (see memory `reference_aiw_aip_launchers`).
+- **Phase 2 — the custom Kanban board** (a bespoke VS Code extension that renders the cards and
+  fires `cardctl`). See the spec's "Custom Kanban board — PHASE 2".
 - Optionally run `reconcile` automatically at session start (a hook).
 - Optionally extend `--pick` to search all card paths (non-primary sessions only reachable by pin).
