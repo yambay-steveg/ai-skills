@@ -21,6 +21,8 @@ Commands:
   cardctl launch <card.md> --new    Force a fresh session even if the card pins one.
   cardctl link   <card.md>          Find the newest Claude session under the card's folder and
                                     write its id back into the card's `sessionId` frontmatter.
+  cardctl set-status <card.md> <s>  Set the card's lifecycle status (the single writer of that
+                                    field; surfaces like the board delegate here, never edit files).
 
 macOS only for now. `code` and `open` are resolved by absolute path (works under GUI launchers
 like Obsidian Shell Commands, which run with a minimal PATH).
@@ -65,6 +67,11 @@ CARDS_DIRS = {
 }
 BUTTON_BAR = ("`BUTTON[launch-card]` `BUTTON[new-session]` "
               "`BUTTON[launch-dangerous]` `BUTTON[pin-session]`")
+
+# The card lifecycle vocabulary. `set-status` accepts only these; `reconcile`
+# keys off `archived`. Surfaces (e.g. the board) must change status through
+# cardctl, not by writing the file, so this stays the single source of truth.
+CARD_STATUSES = ["backlog", "in-progress", "on-hold", "done", "archived"]
 
 
 def die(msg):
@@ -359,6 +366,57 @@ def cmd_link(args):
     Path(args.card).write_text("".join(out))
     print(f"pinned {sid}; logged {len(entries)} session(s) under ## Sessions"
           + (f" (previous {old} kept in history)" if old and old != sid else ""))
+
+
+def card_under_cards_dirs(path):
+    """True if `path` resolves inside one of the configured Cards/ folders — the
+    guard that keeps `set-status` (and any surface delegating to it) from editing
+    arbitrary files."""
+    target = expand(path)
+    return any(target == expand(cd) or target.startswith(expand(cd) + os.sep)
+               for cd in CARDS_DIRS.values())
+
+
+def set_status_in_text(text, status):
+    """Return `text` with its frontmatter `status:` set to `status`, leaving the
+    rest byte-for-byte (surgical single-line edit — body, other fields, quoting and
+    key order untouched, so the vault git diff stays minimal). Replaces a `status:`
+    line in place; if the frontmatter has none, inserts one before the closing `---`."""
+    out, in_fm, seen_open, wrote = [], False, False, False
+    for ln in text.splitlines(keepends=True):
+        if ln.strip() == "---":
+            if not seen_open:
+                seen_open = in_fm = True
+                out.append(ln); continue
+            if in_fm:
+                if not wrote:
+                    out.append(f"status: {status}\n"); wrote = True
+                in_fm = False
+                out.append(ln); continue
+        if in_fm and ln.startswith("status:"):
+            out.append(f"status: {status}\n"); wrote = True; continue
+        out.append(ln)
+    return "".join(out)
+
+
+def cmd_set_status(args):
+    """Set a card's lifecycle `status` — the one board-owned field cardctl writes on
+    demand (R10: surfaces never edit the card file directly; they go through here).
+    Flips the field only; folder moves for `archived` stay with `reconcile`."""
+    status = args.status.strip()
+    if status not in CARD_STATUSES:
+        die(f"invalid status {status!r} (choose: {', '.join(CARD_STATUSES)})")
+    if not Path(args.card).is_file():
+        die(f"{args.card}: no such card")
+    if not card_under_cards_dirs(args.card):
+        die(f"{args.card}: not inside a configured Cards/ folder")
+    fm, text = read_card(args.card)
+    old = str(fm.get("status") or "").strip()
+    if old == status:
+        print(f"{Path(args.card).name}: status already {status}")
+        return
+    Path(args.card).write_text(set_status_in_text(text, status))
+    print(f"{Path(args.card).name}: status {old or '?'} → {status}")
 
 
 def cmd_new(args):
@@ -784,6 +842,11 @@ def main():
                     help="create the primary path (activity folder) + a stub README")
     pn.add_argument("--force", action="store_true", help="overwrite an existing card")
     pn.set_defaults(func=cmd_new)
+
+    ps = sub.add_parser("set-status", help="set a card's lifecycle status (the board-owned field)")
+    ps.add_argument("card")
+    ps.add_argument("status", help=f"one of: {', '.join(CARD_STATUSES)}")
+    ps.set_defaults(func=cmd_set_status)
 
     pr = sub.add_parser("reconcile",
                         help="file folders of cards marked archived (R9; dry-run by default)")

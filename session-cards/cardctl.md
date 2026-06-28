@@ -18,6 +18,7 @@ cardctl launch <card.md> -d       # start in bypassPermissions mode (skip approv
 cardctl link   <card.md> --current   # pin the running session + log it under ## Sessions
 cardctl link   <card.md> --session ID # pin a specific session id (e.g. one that ran elsewhere)
 cardctl new    <slug> --title …   # scaffold a card in the Domain vault's Cards/ folder
+cardctl set-status <card.md> <s>  # set lifecycle status (single writer of the field; surfaces delegate here)
 cardctl reconcile [--apply]       # file folders of cards marked archived (R9; done is left in place)
 cardctl which [folder] [--record] # which card owns a folder (reverse lookup; powers the SessionStart hook)
 cardctl deploy <work|personal|all> [--apply]  # push the canonical surfaces to a vault + ~/bin (R10)
@@ -201,10 +202,12 @@ Note: `cardctl` only reads `paths`/`sessionId`; the rest are for the board/graph
   `--pick` chooser; `-d` bypassPermissions. Driven from Obsidian via the 4-button bar.
 - ✅ `link` — captures newest session id, preserves the rest of the card file (`--force` to repin).
 - ✅ `new` — scaffolds a card (`--make-folder` creates the activity folder).
+- ✅ `set-status` — surgical `status:` rewrite; validates the lifecycle vocabulary and refuses any
+  card outside a configured `Cards/` folder. The single writer of the field — the board delegates here.
 - ✅ `reconcile` — archives folders of archived cards (dry-run + controlled `--apply` test).
 - ✅ `deploy` — single-sources every surface to both vaults + `~/bin`; idempotent, merge-safe;
   covered by the pytest suite and run end-to-end (`deploy all --apply` → clean re-run).
-- ✅ **pytest suite** (`tests/`) — 24 hermetic tests across all commands + the deploy merges.
+- ✅ **pytest suite** (`tests/`) — 31 hermetic tests across all commands + the deploy merges.
 
 ## Not yet built (next)
 - **Phase 2 — the custom Kanban board** (a bespoke VS Code extension that renders the cards and

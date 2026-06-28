@@ -317,3 +317,54 @@ def test_deploy_dry_run_writes_nothing(cc, tmp_path, monkeypatch):
     vault = tmp_path / "vault"
     cc._deploy_surface(vault, "Cards/board.base", "copy", "Cards/board.base", apply=False)
     assert not (vault / "Cards/board.base").exists()
+
+
+# ── set-status ──────────────────────────────────────────────────────────────
+def test_set_status_in_text_is_surgical(cc):
+    doc = ("---\ntype: project\ntitle: T\nstatus: in-progress\n"
+           "summary: a card\n---\nbody\n\n---\n\nmore\n")
+    out = cc.set_status_in_text(doc, "done")
+    assert out == doc.replace("status: in-progress", "status: done")  # only that line
+
+
+def test_set_status_in_text_inserts_when_absent(cc):
+    doc = "---\ntitle: T\n---\nbody\n"
+    assert cc.set_status_in_text(doc, "done") == "---\ntitle: T\nstatus: done\n---\nbody\n"
+
+
+def test_set_status_writes_card_within_cards_dir(cc, tmp_path, monkeypatch):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "demo", status="in-progress")
+    cc.cmd_set_status(NS(card=str(card), status="done"))
+    assert "status: done\n" in card.read_text()
+    assert "status: in-progress" not in card.read_text()
+
+
+def test_set_status_rejects_unknown_status(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "demo", status="backlog")
+    with pytest.raises(SystemExit):
+        cc.cmd_set_status(NS(card=str(card), status="blocked"))
+    assert card.read_text().count("status: backlog") == 1  # untouched
+
+
+def test_set_status_refuses_card_outside_cards_dirs(cc, tmp_path, monkeypatch):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    outside = tmp_path / "loose.md"
+    outside.write_text("---\ntitle: T\nstatus: backlog\n---\nbody\n")
+    with pytest.raises(SystemExit):
+        cc.cmd_set_status(NS(card=str(outside), status="done"))
+    assert "status: backlog" in outside.read_text()  # untouched
+
+
+def test_set_status_noop_when_already_set(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "demo", status="done")
+    before = card.read_text()
+    cc.cmd_set_status(NS(card=str(card), status="done"))
+    assert card.read_text() == before
+    assert "already done" in capsys.readouterr().out
