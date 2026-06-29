@@ -23,6 +23,10 @@ Commands:
                                     write its id back into the card's `sessionId` frontmatter.
   cardctl set-status <card.md> <s>  Set the card's lifecycle status (the single writer of that
                                     field; surfaces like the board delegate here, never edit files).
+  cardctl list [--json]             List every card across the Cards/ folders. With --json, emit a
+                                    JSON array (one object per card) the board consumes directly.
+  cardctl focus <card.md>           Bring the card's VS Code window to the front (macOS; needs
+                                    Accessibility permission — best-effort, never crashes).
 
 macOS only for now. `code` and `open` are resolved by absolute path (works under GUI launchers
 like Obsidian Shell Commands, which run with a minimal PATH).
@@ -117,6 +121,32 @@ def expand(p):
     return str(Path(os.path.expanduser(p)).resolve())
 
 
+def unquote(v):
+    """Strip a single layer of surrounding matching quotes from a scalar (the way
+    `cmd_which` does), leaving unquoted values untouched."""
+    v = str(v).strip()
+    return v[1:-1] if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'" else v
+
+
+def unwrap_wikilink(v):
+    """`[[Target]]` / `[[Target|Alias]]` → `Target`; anything else returned as-is
+    (after unquoting). The board wants the bare target, not the display alias."""
+    v = unquote(v)
+    m = re.match(r"^\[\[(.+?)\]\]$", v)
+    if m:
+        return m.group(1).split("|", 1)[0].strip()
+    return v
+
+
+def area_of(tags):
+    """First `area/<slug>` tag's slug (e.g. `area/tools` → `tools`), else ''."""
+    for t in tags or []:
+        t = t.strip()
+        if t.startswith("area/"):
+            return t[len("area/"):]
+    return ""
+
+
 def encode_cwd(cwd):
     """Claude encodes a project cwd by replacing '/' with '-'."""
     return cwd.replace("/", "-")
@@ -171,14 +201,19 @@ def build_workspace(card_path, fm, sid, dangerous=False):
     if not folders:
         die(f"{card_path}: no existing folders in `paths`")
 
+    # window.title makes each generated window identifiable by its card, so `focus`
+    # (and launch's window-raise) can target the right one — VS Code's resume URI has
+    # no window-targeting param. Merge, don't overwrite, so --dangerous settings survive.
+    title = unquote(fm.get("title") or Path(card_path).stem)
+    settings = {"window.title": f"{title} — ${{rootName}}"}
+
     # --dangerous: workspace-scoped settings so the Claude extension starts in
     # bypassPermissions mode for THIS window only (regenerated each launch).
-    settings = {}
     if dangerous:
-        settings = {
+        settings.update({
             "claudeCode.allowDangerouslySkipPermissions": True,
             "claudeCode.initialPermissionMode": "bypassPermissions",
-        }
+        })
 
     CACHE.mkdir(parents=True, exist_ok=True)
     ws = CACHE / f"{Path(card_path).stem}.code-workspace"
@@ -816,6 +851,93 @@ def cmd_which(args):
             print(f"  {a}")
 
 
+def card_to_dict(path, source):
+    """The board's card model for one card file (scalars unquoted, wikilinks
+    unwrapped, `area` derived). `source` is the vault domain key (work/personal)."""
+    fm, _ = read_card(path)
+    tags = fm.get("tags") if isinstance(fm.get("tags"), list) else []
+    paths = fm.get("paths") if isinstance(fm.get("paths"), list) else []
+    p = Path(path)
+    return {
+        "filePath": str(p.resolve()),
+        "fileName": p.stem,
+        "title": unquote(fm.get("title") or p.stem),
+        "status": unquote(fm.get("status") or ""),
+        "summary": unquote(fm.get("summary") or ""),
+        "latest": unquote(fm.get("latest") or ""),
+        "tags": [t.strip() for t in tags],
+        "program": unwrap_wikilink(fm.get("program") or ""),
+        "project": unwrap_wikilink(fm.get("project") or ""),
+        "sessionId": unquote(fm.get("sessionId") or ""),
+        "paths": [str(x).strip() for x in paths],
+        "area": area_of(tags),
+        "source": source,
+    }
+
+
+def cmd_list(args):
+    """Read interface: enumerate every card across all CARDS_DIRS. With --json,
+    emit a JSON array the board can map straight onto its card model; otherwise a
+    brief human listing (title — status)."""
+    cards = []
+    for source, cd in CARDS_DIRS.items():
+        if cd.is_dir():
+            for c in sorted(cd.glob("*.md")):
+                cards.append(card_to_dict(c, source))
+    if args.json:
+        print(json.dumps(cards, ensure_ascii=False))
+    else:
+        for c in cards:
+            print(f"{c['title']} — {c['status'] or '?'}")
+
+
+def cmd_focus(args):
+    """Bring the VS Code window for a card to the front (the deterministic
+    window-targeting primitive; complements launch's best-effort activate nudge).
+
+    There is no per-window targeting param on the resume URI, so we drive macOS
+    System Events: set the `Code` process frontmost, then AXRaise the window whose
+    title contains the card title (`build_workspace` stamps `window.title` so each
+    card's window is identifiable). Needs Accessibility permission at runtime —
+    if the AppleScript fails (perm not granted, no match), we print a clear note
+    and return rather than crash. Best-effort by design."""
+    fm, _ = read_card(args.card)
+    title = unquote(fm.get("title") or Path(args.card).stem)
+    # AppleScript: raise the first Code window whose title contains the card title.
+    # Escape double quotes/backslashes in the title for embedding in the script.
+    safe = title.replace("\\", "\\\\").replace('"', '\\"')
+    script = f'''
+tell application "System Events"
+    if not (exists process "Code") then error "VS Code is not running"
+    tell process "Code"
+        set frontmost to true
+        repeat with w in windows
+            if name of w contains "{safe}" then
+                perform action "AXRaise" of w
+                return
+            end if
+        end repeat
+        error "no VS Code window titled like " & "{safe}"
+    end tell
+end tell
+'''
+    try:
+        r = subprocess.run([OSASCRIPT, "-e", script],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"cardctl: focus failed to run osascript ({e}); "
+              "is this macOS?", file=sys.stderr)
+        return
+    if r.returncode != 0:
+        # Common cause: Accessibility permission not granted to the launcher.
+        print(f"cardctl: could not raise the window for {title!r}: "
+              f"{r.stderr.strip() or 'unknown error'}\n"
+              "  (focus needs macOS Accessibility permission for the launching app — "
+              "System Settings → Privacy & Security → Accessibility.)", file=sys.stderr)
+    else:
+        print(f"focused VS Code window for {title!r}")
+
+
 def main():
     ap = argparse.ArgumentParser(prog="cardctl", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -879,6 +1001,15 @@ def main():
                     help="which vault to deploy to (or 'all')")
     pd.add_argument("--apply", action="store_true", help="write the changes (default: dry run)")
     pd.set_defaults(func=cmd_deploy)
+
+    pls = sub.add_parser("list", help="list all cards across the Cards/ folders (--json for the board)")
+    pls.add_argument("--json", action="store_true",
+                     help="emit a JSON array (one object per card) for the board to consume")
+    pls.set_defaults(func=cmd_list)
+
+    pf = sub.add_parser("focus", help="bring the card's VS Code window to the front (macOS Accessibility)")
+    pf.add_argument("card")
+    pf.set_defaults(func=cmd_focus)
 
     pw = sub.add_parser("which", help="which card owns a folder (reverse lookup; for the session-start hook)")
     pw.add_argument("folder", nargs="?", help="folder to resolve (default: cwd)")
