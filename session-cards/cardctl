@@ -971,7 +971,12 @@ def _run_hs(lua):
         raise HsUnavailable("Hammerspoon not running (ipc message port unreachable)")
     if r.returncode != 0:
         raise HsUnavailable(err or out or f"hs exited {r.returncode}")
-    return out
+    # Hammerspoon prints console/preamble lines (e.g. "-- Loading extension: json")
+    # ahead of a snippet's return value the first time an extension lazy-loads —
+    # drop those `--` lines so the caller parses only the actual return value.
+    return "\n".join(
+        ln for ln in out.splitlines() if not ln.lstrip().startswith("--")
+    ).strip()
 
 
 def hs_code_windows():

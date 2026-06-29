@@ -631,6 +631,15 @@ def test_hs_code_windows_parses_json(cc, monkeypatch):
     assert wins == [{"id": 19146, "title": "X — session-card-board (Workspace)"}]
 
 
+def test_hs_code_windows_strips_hammerspoon_preamble(cc, monkeypatch):
+    # Hammerspoon prepends a "-- Loading extension: json" line the first time
+    # hs.json lazy-loads; the JSON must still parse.
+    _fake_hs(monkeypatch, cc,
+             stdout='-- Loading extension: json\n[{"id":21465,"title":"Determine Card Hiearchy — determine-card-hiearchy (Workspace)"}]')
+    wins = cc.hs_code_windows()
+    assert wins == [{"id": 21465, "title": "Determine Card Hiearchy — determine-card-hiearchy (Workspace)"}]
+
+
 def test_hs_code_windows_raises_when_port_unreachable(cc, monkeypatch):
     _fake_hs(monkeypatch, cc, stderr="hs: can't access … message port")
     with pytest.raises(cc.HsUnavailable):
