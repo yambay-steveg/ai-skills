@@ -631,6 +631,24 @@ def test_hs_code_windows_parses_json(cc, monkeypatch):
     assert wins == [{"id": 19146, "title": "X — session-card-board (Workspace)"}]
 
 
+def test_run_hs_closes_stdin(cc, monkeypatch):
+    # `hs` blocks on an open stdin pipe when spawned non-interactively (board → cardctl
+    # → hs), so _run_hs must pass stdin=DEVNULL or it times out.
+    captured = {}
+
+    def fake_run(argv, **kw):
+        captured.update(kw)
+
+        class R:
+            stdout, stderr, returncode = "[]", "", 0
+
+        return R()
+
+    monkeypatch.setattr(cc.subprocess, "run", fake_run)
+    cc._run_hs('return "x"')
+    assert captured.get("stdin") == cc.subprocess.DEVNULL
+
+
 def test_hs_code_windows_strips_hammerspoon_preamble(cc, monkeypatch):
     # Hammerspoon prepends a "-- Loading extension: json" line the first time
     # hs.json lazy-loads; the JSON must still parse.
