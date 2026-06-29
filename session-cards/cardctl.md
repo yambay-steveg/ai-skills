@@ -127,14 +127,18 @@ Turn an in-flight piece of work (already has sessions, maybe across repos) into 
    ```
    Note each result's `session_id` and `project` (= the cwd the session ran in). The most
    reliable term is a path or filename only that work touches (e.g. `endurance-testing.adoc`).
-2. **Scaffold the card** — first `--path` is the **primary** (where the sessions ran, so resume
-   works); add the other folders the work spans:
+2. **Scaffold the card.** A new card always gets its own activity folder, auto-created at
+   `<active-root>/<slug>` as `paths[0]` (where its fresh sessions root). The work already ran
+   *elsewhere*, so pin the existing session with `--session` and add its folders with `--path`
+   (each `--path` is an **additional existing** folder, appended after the activity folder and
+   not created):
    ```bash
    cardctl new prodev-32988-endurance-testing-whitepaper \
      --title "PRODEV-32988 endurance testing whitepaper" \
      --path <project-cwd> --path <worktree> --path <task-folder> \
      --session <session_id> --jira PRODEV-32988 --area area/v7 --program "Work Ops"
    ```
+   (Pure pointer card with no activity folder of its own? Add `--no-folder`.)
 3. **Open** the card in Obsidian (Reading view) → **▶ Launch session**.
 
 Notes: pin the *active* session with `--session`; reach other sessions under the primary folder
@@ -144,15 +148,22 @@ pinning (a known limitation).
 ## New activity from scratch
 
 ```bash
-cardctl new <slug> --title "…" --make-folder \
-  --path <repo>/active/<slug> [--path <source repo/worktree> …] --area area/x
+cardctl new <slug> --title "…" [--path <source repo/worktree> …] --area area/x
 ```
 
-`--make-folder` creates the **primary path** (the activity folder) + a stub README. **Session
-rooting:** the first `--path` becomes the new session's **cwd** (the extension uses
-`workspaceFolders[0]` as cwd, the rest as `--add-dir`). So make the activity folder the first
-`--path` → sessions root there (not at the repo top), and stay discoverable per-activity. This is
-the fix for the old `aiw`-roots-at-repo-top behaviour; launch via the card instead of bare `aiw`.
+A plain `cardctl new` is enough: the card's **activity folder is auto-created** at
+`<active-root(domain)>/<slug>` (+ a stub README) and becomes `paths[0]`, so the card is launchable
+immediately — no empty-`paths`/unlaunchable card. The per-domain `active-root` is `work →
+…/claude-code-steveg/active`, `personal → …/ai-tasks/active` (`ACTIVE_ROOTS`, mirroring
+`CARDS_DIRS`). **Session rooting:** `paths[0]` becomes the new session's **cwd** (the extension
+uses `workspaceFolders[0]` as cwd, the rest as `--add-dir`), so sessions root in the activity
+folder, not at a repo top.
+
+Any `--path` entries are **additional existing folders** (e.g. a monorepo to link), appended
+*after* the activity folder; they are not created (a missing one warns). `--make-folder` is now a
+no-op kept for back-compat. Use `--no-folder` to opt out of the auto activity folder entirely (a
+pure pointer card over `--path` folders; with no `--path` its `paths` is empty and it won't launch
+— the explicit opt-out).
 
 ### `launch`
 
@@ -214,13 +225,15 @@ program: "[[Work Ops]]"            # hierarchy via wikilinks (on a project card)
 # --- plumbing (cardctl; hidden on the board) ---
 sessionId: <uuid>     # optional pin; set by `link` or hand-filled
 paths:                # context folders — activity folder FIRST (= session cwd), then source repos
-  - /path/to/activity-folder
-  - /path/to/source-repo
+  - /path/to/activity-folder    # auto-created by `new` at <active-root>/<slug>
+  - /path/to/source-repo        # additional existing folder (--path); linked, not created
 ---
 ```
 
-`cardctl new` flags: `--summary`, `--latest`, `--title`, `--path` (repeatable), `--session`,
-`--jira`, `--area`, `--program`, `--status`, `--make-folder`.
+`cardctl new` flags: `--title`, `--summary`, `--latest`, `--path` (repeatable; *additional
+existing* folders), `--session`, `--jira`, `--area`, `--program`, `--status`, `--domain`,
+`--no-folder` (opt out of the auto activity folder), `--make-folder` (now a no-op — the activity
+folder is auto-created from the slug by default).
 Note: `cardctl` only reads `paths`/`sessionId`; the rest are for the board/graph/consoles.
 
 ## Status / tested
@@ -228,7 +241,8 @@ Note: `cardctl` only reads `paths`/`sessionId`; the rest are for the board/graph
 - ✅ `launch` — resume (pin / latest-for-folder) and start-new, multi-root, origin auto-prepended;
   `--pick` chooser; `-d` bypassPermissions. Driven from Obsidian via the 4-button bar.
 - ✅ `link` — captures newest session id, preserves the rest of the card file (`--force` to repin).
-- ✅ `new` — scaffolds a card (`--make-folder` creates the activity folder).
+- ✅ `new` — scaffolds a card; auto-creates the activity folder from the slug at `<active-root>/<slug>`
+  as `paths[0]` (`--path` = additional existing folders, appended after; `--no-folder` to opt out).
 - ✅ `set-status` — surgical `status:` rewrite; validates the lifecycle vocabulary and refuses any
   card outside a configured `Cards/` folder. The single writer of the field — the board delegates here.
 - ✅ `reconcile` — archives folders of archived cards (dry-run + controlled `--apply` test).
@@ -239,7 +253,7 @@ Note: `cardctl` only reads `paths`/`sessionId`; the rest are for the board/graph
   shape/fields/multi-vault.
 - ✅ `focus` — raises a card's VS Code window via `osascript`/System Events (window-targeting primitive);
   best-effort, reports cleanly if Accessibility permission is missing. Tested with `osascript` mocked.
-- ✅ **pytest suite** (`tests/`) — 44 hermetic tests across all commands + the deploy merges.
+- ✅ **pytest suite** (`tests/`) — 49 hermetic tests across all commands + the deploy merges.
 
 ## Not yet built (next)
 - **Phase 2 — the custom Kanban board** (a bespoke VS Code extension that renders the cards and

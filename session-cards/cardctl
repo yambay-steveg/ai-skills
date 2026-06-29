@@ -70,6 +70,14 @@ CARDS_DIRS = {
     "work": Path.home() / "Source/work/yambay-steveg/work-knowledge/Cards",
     "personal": Path.home() / "Source/personal/knowledge/personal-knowledge/Cards",
 }
+
+# Where a new card's own activity folder is created, per Domain. `cardctl new` makes
+# <root>/<slug> as the card's primary path so a plain `new` yields a launchable card.
+# Mirrors CARDS_DIRS; confirmed against existing cards (e.g. pocketsmith-integration).
+ACTIVE_ROOTS = {
+    "work": Path.home() / "Source/work/yambay-steveg/claude-code-steveg/active",
+    "personal": Path.home() / "Source/personal/ai-tasks/active",
+}
 BUTTON_BAR = ("`BUTTON[launch-card]` `BUTTON[new-session]` "
               "`BUTTON[launch-dangerous]` `BUTTON[pin-session]`")
 
@@ -503,19 +511,27 @@ def cmd_new(args):
         die(f"{dest} already exists (use --force to overwrite)")
 
     tags = ([args.area] if args.area else []) + ([f"jira/{args.jira}"] if args.jira else [])
-    paths = [expand(p) for p in (args.path or [])]
+    extra = [expand(p) for p in (args.path or [])]
 
-    # The primary path (paths[0]) is the activity folder — where sessions root (cwd) and
-    # working state lives. Create it for a brand-new activity so it can be a workspace folder.
-    if args.make_folder and paths:
-        prim = Path(paths[0])
+    # By default a new card gets its own activity folder, auto-created from the slug under the
+    # domain's ACTIVE_ROOTS — so a plain `cardctl new` yields a launchable card (no empty `paths`).
+    # paths[0] is that activity folder (sessions root/cwd here); any --path entries are ADDITIONAL
+    # existing folders (e.g. a monorepo to link), appended after it and NOT auto-created.
+    # --no-folder opts out (pure pointer card — paths is just the --path entries, maybe empty).
+    paths = []
+    if not args.no_folder:
+        prim = ACTIVE_ROOTS[args.domain] / args.slug
         prim.mkdir(parents=True, exist_ok=True)
         readme = prim / "README.md"
         if not readme.exists():
             readme.write_text(f"# {args.title}\n\n**Started:** {datetime.date.today().isoformat()} "
                               "(AWST)\n\nActivity folder — sessions root here; working state lives here.\n")
         print(f"  created activity folder {prim}")
-    for p in paths:
+        paths.append(str(prim))
+    paths += extra
+
+    # --path entries are additional existing folders; warn (don't create) if missing.
+    for p in extra:
         if not Path(p).is_dir():
             print(f"cardctl: warning — path does not exist yet: {p}", file=sys.stderr)
 
@@ -992,7 +1008,8 @@ def main():
     pn.add_argument("--summary", help="one-line 'what this is' (shown on the board)")
     pn.add_argument("--latest", help="one-line current state and/or next step (shown on the board)")
     pn.add_argument("--path", action="append",
-                    help="context folder (repeatable; first = primary, where sessions run)")
+                    help="ADDITIONAL existing folder to link (repeatable; e.g. a monorepo). "
+                         "Appended after the auto-created activity folder; not created.")
     pn.add_argument("--session", help="pin this session id (e.g. from `session-search`)")
     pn.add_argument("--jira", help="Jira key → jira/<KEY> tag")
     pn.add_argument("--area", help="area/* facet tag, e.g. area/v7")
@@ -1001,7 +1018,11 @@ def main():
     pn.add_argument("--type", default="project", help="project | program (default project)")
     pn.add_argument("--domain", default="work", choices=list(CARDS_DIRS))
     pn.add_argument("--make-folder", action="store_true",
-                    help="create the primary path (activity folder) + a stub README")
+                    help="(now default — the activity folder is always auto-created; accepted "
+                         "for back-compat, no-op)")
+    pn.add_argument("--no-folder", action="store_true",
+                    help="opt out of the auto activity folder — card carries only --path entries "
+                         "(may be empty; such a card won't launch)")
     pn.add_argument("--force", action="store_true", help="overwrite an existing card")
     pn.set_defaults(func=cmd_new)
 
