@@ -238,6 +238,26 @@ def sessions_for_folder(folder):
     return sorted(proj.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
 
 
+def last_active(fm):
+    """Newest Claude-session activity for a card, as a timezone-aware ISO-8601 string
+    (local tz — Steve is AWST), or None if the card has no sessions. The board sorts on
+    this for 'most recently worked' and a live/recent badge. Considers BOTH the pinned
+    `sessionId`'s transcript (it may have run outside the card's folders) and every
+    transcript under the card's `paths` folders; takes the max mtime across them."""
+    mtimes = []
+    pin = fm.get("sessionId")
+    if isinstance(pin, str) and pin.strip():
+        for hit in glob.glob(str(PROJECTS / "*" / f"{pin.strip()}.jsonl")):
+            mtimes.append(Path(hit).stat().st_mtime)
+    for p in (fm.get("paths") or []):
+        folder = expand(p)
+        if Path(folder).is_dir():
+            mtimes += [t.stat().st_mtime for t in sessions_for_folder(folder)]
+    if not mtimes:
+        return None
+    return datetime.datetime.fromtimestamp(max(mtimes)).astimezone().isoformat()
+
+
 def first_user_msg(path):
     """A short preview of a session's first human message (for the pick list)."""
     try:
@@ -872,6 +892,7 @@ def card_to_dict(path, source):
         "paths": [str(x).strip() for x in paths],
         "area": area_of(tags),
         "source": source,
+        "lastActive": last_active(fm),
     }
 
 

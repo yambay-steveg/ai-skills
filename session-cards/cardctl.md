@@ -48,7 +48,10 @@ start (or on demand) to let board status drive the filesystem.
 the board's card model, so the board maps it directly. Per card: `filePath` (absolute), `fileName`
 (basename, no `.md`), `title`, `status`, `summary`, `latest`, `tags` (array), `program` and `project`
 (wikilink-unwrapped — `[[Work Ops|Ops]]` → `Work Ops`), `sessionId`, `paths` (array), `area` (the first
-`area/<slug>` tag's slug, e.g. `tools`), and `source` (the vault domain key, `work`/`personal`). Scalar
+`area/<slug>` tag's slug, e.g. `tools`), `source` (the vault domain key, `work`/`personal`), and
+`lastActive` (ISO-8601, timezone-aware — the newest session-transcript mtime across the pinned
+`sessionId`'s transcript **and** every transcript under the card's `paths`, or `null` if the card has
+no sessions; the board sorts on it for "most recently worked" and a live/recent badge). Scalar
 values are unquoted and `ensure_ascii=False` keeps em-dashes etc. literal. Without `--json` it prints a
 brief human listing (`title — status`). This is the read keystone for the board's hierarchy view.
 
@@ -232,10 +235,11 @@ Note: `cardctl` only reads `paths`/`sessionId`; the rest are for the board/graph
 - ✅ `deploy` — single-sources every surface to both vaults + `~/bin`; idempotent, merge-safe;
   covered by the pytest suite and run end-to-end (`deploy all --apply` → clean re-run).
 - ✅ `list` — JSON read interface for the board (full card model, wikilink-unwrap, `area` derivation,
-  `source` domain key) + a brief human listing; tested for shape/fields/multi-vault.
+  `source` domain key, `lastActive` recency timestamp) + a brief human listing; tested for
+  shape/fields/multi-vault.
 - ✅ `focus` — raises a card's VS Code window via `osascript`/System Events (window-targeting primitive);
   best-effort, reports cleanly if Accessibility permission is missing. Tested with `osascript` mocked.
-- ✅ **pytest suite** (`tests/`) — 41 hermetic tests across all commands + the deploy merges.
+- ✅ **pytest suite** (`tests/`) — 44 hermetic tests across all commands + the deploy merges.
 
 ## Not yet built (next)
 - **Phase 2 — the custom Kanban board** (a bespoke VS Code extension that renders the cards and
