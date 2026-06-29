@@ -569,3 +569,74 @@ def test_focus_failure_is_reported_not_raised(cc, tmp_path, monkeypatch, capsys)
     err = capsys.readouterr().err
     assert "could not raise the window" in err
     assert "Accessibility" in err
+
+
+# ── new (auto activity folder) ─────────────────────────────────────────────────
+def _new_ns(slug, **kw):
+    """NS for cmd_new with every field defaulted (mirrors the argparser)."""
+    base = dict(slug=slug, title="A title", summary=None, latest=None, path=None,
+                session=None, jira=None, area=None, program=None,
+                status="in-progress", type="project", domain="work",
+                make_folder=False, no_folder=False, force=False)
+    base.update(kw)
+    return NS(**base)
+
+
+def _wire_new(cc, tmp_path, monkeypatch):
+    """Point CARDS_DIRS + ACTIVE_ROOTS at temp dirs; return (cards, active)."""
+    cards = tmp_path / "vault" / "Cards"
+    active = tmp_path / "repo" / "active"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards, "personal": tmp_path / "p" / "Cards"})
+    monkeypatch.setattr(cc, "ACTIVE_ROOTS", {"work": active, "personal": tmp_path / "p" / "active"})
+    return cards, active
+
+
+def test_new_default_creates_activity_folder_as_primary(cc, tmp_path, monkeypatch, capsys):
+    cards, active = _wire_new(cc, tmp_path, monkeypatch)
+    cc.cmd_new(_new_ns("my-thing", title="My Thing"))
+    card = cards / "my-thing.md"
+    fm, _ = cc.read_card(str(card))
+    activity = active / "my-thing"
+    assert fm["paths"][0] == str(activity)          # activity folder is primary
+    assert activity.is_dir()                        # …and it was created
+    assert (activity / "README.md").is_file()       # with a stub README
+    assert "created activity folder" in capsys.readouterr().out
+
+
+def test_new_path_entries_appended_after_activity_and_not_created(cc, tmp_path, monkeypatch):
+    cards, active = _wire_new(cc, tmp_path, monkeypatch)
+    existing = tmp_path / "monorepo"
+    existing.mkdir()
+    missing = tmp_path / "nope"
+    cc.cmd_new(_new_ns("linker", path=[str(existing), str(missing)]))
+    fm, _ = cc.read_card(str(cards / "linker.md"))
+    assert fm["paths"] == [str(active / "linker"), str(existing), str(missing)]
+    assert (active / "linker").is_dir()             # activity folder created
+    assert not missing.exists()                     # --path entries are never created
+
+
+def test_new_no_folder_skips_auto_activity_folder(cc, tmp_path, monkeypatch):
+    cards, active = _wire_new(cc, tmp_path, monkeypatch)
+    existing = tmp_path / "repo-only"
+    existing.mkdir()
+    cc.cmd_new(_new_ns("pointer", no_folder=True, path=[str(existing)]))
+    fm, _ = cc.read_card(str(cards / "pointer.md"))
+    assert fm["paths"] == [str(existing)]
+    assert not (active / "pointer").exists()        # no auto activity folder
+
+
+def test_new_no_folder_no_path_yields_empty_paths(cc, tmp_path, monkeypatch):
+    cards, active = _wire_new(cc, tmp_path, monkeypatch)
+    cc.cmd_new(_new_ns("empty", no_folder=True))
+    fm, _ = cc.read_card(str(cards / "empty.md"))
+    assert fm.get("paths") == []                    # explicit opt-out → allowed empty
+    assert not (active / "empty").exists()
+
+
+def test_new_domain_selects_active_root(cc, tmp_path, monkeypatch):
+    cards, active = _wire_new(cc, tmp_path, monkeypatch)
+    p_active = tmp_path / "p" / "active"
+    cc.cmd_new(_new_ns("pcard", domain="personal"))
+    fm, _ = cc.read_card(str(tmp_path / "p" / "Cards" / "pcard.md"))
+    assert fm["paths"][0] == str(p_active / "pcard")
+    assert (p_active / "pcard").is_dir()
