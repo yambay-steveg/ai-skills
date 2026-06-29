@@ -453,6 +453,61 @@ def test_list_human_listing(cc, tmp_path, monkeypatch, capsys):
     assert "Card One — backlog" in capsys.readouterr().out
 
 
+# ── lastActive ────────────────────────────────────────────────────────────────
+def test_last_active_reflects_newest_transcript_under_path(cc, tmp_path, monkeypatch, capsys):
+    import datetime
+    import os
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(cc, "PROJECTS", projects)
+    cards = tmp_path / "Cards"
+    folder = (tmp_path / "active" / "x").resolve()
+    folder.mkdir(parents=True)
+    older = fake_transcript(projects, str(folder))
+    newer = fake_transcript(projects, str(folder))
+    # Pin the mtimes so the newest is unambiguous (and not "now").
+    proj = projects / str(folder).replace("/", "-")
+    os.utime(proj / f"{older}.jsonl", (1_000_000, 1_000_000))
+    os.utime(proj / f"{newer}.jsonl", (2_000_000, 2_000_000))
+    make_card(cards, "x-card", paths=[str(folder)])
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+
+    cc.cmd_list(NS(json=True))
+    c = json.loads(capsys.readouterr().out)[0]
+    assert c["lastActive"] is not None
+    # ISO-8601, timezone-aware, and the newest of the two transcripts.
+    parsed = datetime.datetime.fromisoformat(c["lastActive"])
+    assert parsed.tzinfo is not None
+    assert parsed == datetime.datetime.fromtimestamp(2_000_000).astimezone()
+
+
+def test_last_active_picks_up_pinned_session_transcript(cc, tmp_path, monkeypatch, capsys):
+    import datetime
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(cc, "PROJECTS", projects)
+    cards = tmp_path / "Cards"
+    # Pinned session ran in some OTHER folder (not in the card's paths).
+    elsewhere = (tmp_path / "elsewhere").resolve()
+    sid = fake_transcript(projects, str(elsewhere))
+    make_card(cards, "x-card", paths=[str((tmp_path / "active" / "x").resolve())], session=sid)
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+
+    cc.cmd_list(NS(json=True))
+    c = json.loads(capsys.readouterr().out)[0]
+    assert c["lastActive"] is not None
+    assert datetime.datetime.fromisoformat(c["lastActive"]).tzinfo is not None
+
+
+def test_last_active_null_when_no_sessions(cc, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cc, "PROJECTS", tmp_path / "projects")
+    cards = tmp_path / "Cards"
+    make_card(cards, "x-card", paths=[str((tmp_path / "active" / "x").resolve())])
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+
+    cc.cmd_list(NS(json=True))
+    c = json.loads(capsys.readouterr().out)[0]
+    assert c["lastActive"] is None
+
+
 # ── build_workspace: window.title injection ───────────────────────────────────
 def test_build_workspace_injects_window_title(cc, tmp_path, monkeypatch):
     monkeypatch.setattr(cc, "CACHE", tmp_path / "cache")
