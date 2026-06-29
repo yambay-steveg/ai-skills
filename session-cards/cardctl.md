@@ -19,6 +19,8 @@ cardctl link   <card.md> --current   # pin the running session + log it under ##
 cardctl link   <card.md> --session ID # pin a specific session id (e.g. one that ran elsewhere)
 cardctl new    <slug> --title …   # scaffold a card in the Domain vault's Cards/ folder
 cardctl set-status <card.md> <s>  # set lifecycle status (single writer of the field; surfaces delegate here)
+cardctl list [--json]             # list all cards across the Cards/ folders; --json = the board's read interface
+cardctl focus  <card.md>          # bring the card's VS Code window to the front (macOS Accessibility)
 cardctl reconcile [--apply]       # file folders of cards marked archived (R9; done is left in place)
 cardctl which [folder] [--record] # which card owns a folder (reverse lookup; powers the SessionStart hook)
 cardctl deploy <work|personal|all> [--apply]  # push the canonical surfaces to a vault + ~/bin (R10)
@@ -39,6 +41,28 @@ its task repo (`git mv` + an `Archive:` commit) and updates the card's path. Cro
 the vault, folder in the task repo. **Dry-run by default** — add `--apply` to perform the moves.
 Skips a folder still referenced by a *live* (non-archived) card (R14 Pattern B). Run it at session
 start (or on demand) to let board status drive the filesystem.
+
+## `list` — the board's read interface
+
+`cardctl list --json` prints a JSON array (one object per card across every `Cards/` folder) shaped to
+the board's card model, so the board maps it directly. Per card: `filePath` (absolute), `fileName`
+(basename, no `.md`), `title`, `status`, `summary`, `latest`, `tags` (array), `program` and `project`
+(wikilink-unwrapped — `[[Work Ops|Ops]]` → `Work Ops`), `sessionId`, `paths` (array), `area` (the first
+`area/<slug>` tag's slug, e.g. `tools`), and `source` (the vault domain key, `work`/`personal`). Scalar
+values are unquoted and `ensure_ascii=False` keeps em-dashes etc. literal. Without `--json` it prints a
+brief human listing (`title — status`). This is the read keystone for the board's hierarchy view.
+
+## `focus` — window-targeting primitive
+
+`cardctl focus <card.md>` brings the VS Code window for that card to the front. VS Code's resume URI has
+no window-targeting param, so this is the deterministic complement to launch's best-effort `activate`
+nudge: `build_workspace` stamps a `window.title` (`"<card title> — ${rootName}"`) into each generated
+workspace so its window is identifiable, and `focus` drives macOS System Events (via `osascript`) to set
+the `Code` process frontmost and `AXRaise` the window whose title contains the card title. **Needs macOS
+Accessibility permission** for the launching app (System Settings → Privacy & Security → Accessibility);
+it's best-effort — if the AppleScript fails it prints a clear message and returns rather than crashing.
+(Launch is intentionally left as-is — the standalone `focus` is the safe primitive; wiring it into launch
+is deferred so launch can never be blocked on an un-granted permission.)
 
 ## `deploy` — single-source the surfaces (R10)
 
@@ -207,7 +231,11 @@ Note: `cardctl` only reads `paths`/`sessionId`; the rest are for the board/graph
 - ✅ `reconcile` — archives folders of archived cards (dry-run + controlled `--apply` test).
 - ✅ `deploy` — single-sources every surface to both vaults + `~/bin`; idempotent, merge-safe;
   covered by the pytest suite and run end-to-end (`deploy all --apply` → clean re-run).
-- ✅ **pytest suite** (`tests/`) — 31 hermetic tests across all commands + the deploy merges.
+- ✅ `list` — JSON read interface for the board (full card model, wikilink-unwrap, `area` derivation,
+  `source` domain key) + a brief human listing; tested for shape/fields/multi-vault.
+- ✅ `focus` — raises a card's VS Code window via `osascript`/System Events (window-targeting primitive);
+  best-effort, reports cleanly if Accessibility permission is missing. Tested with `osascript` mocked.
+- ✅ **pytest suite** (`tests/`) — 41 hermetic tests across all commands + the deploy merges.
 
 ## Not yet built (next)
 - **Phase 2 — the custom Kanban board** (a bespoke VS Code extension that renders the cards and

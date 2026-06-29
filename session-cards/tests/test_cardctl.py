@@ -368,3 +368,149 @@ def test_set_status_noop_when_already_set(cc, tmp_path, monkeypatch, capsys):
     cc.cmd_set_status(NS(card=str(card), status="done"))
     assert card.read_text() == before
     assert "already done" in capsys.readouterr().out
+
+
+# ── wikilink / scalar helpers ─────────────────────────────────────────────────
+def test_unwrap_wikilink_target_and_alias(cc):
+    assert cc.unwrap_wikilink("[[Work Ops]]") == "Work Ops"
+    assert cc.unwrap_wikilink("[[Work Ops|Ops]]") == "Work Ops"
+    assert cc.unwrap_wikilink('"[[Work Ops|Ops]]"') == "Work Ops"   # unquoted first
+    assert cc.unwrap_wikilink("plain") == "plain"
+    assert cc.unwrap_wikilink("") == ""
+
+
+def test_area_of_first_area_tag(cc):
+    assert cc.area_of(["kind/x", "area/tools", "area/v7"]) == "tools"
+    assert cc.area_of(["kind/x"]) == ""
+    assert cc.area_of([]) == ""
+
+
+# ── list (--json) ─────────────────────────────────────────────────────────────
+def _full_card(cards_dir, slug, **fm_extra):
+    """A card with the full board field set for list --json assertions."""
+    cards_dir.mkdir(parents=True, exist_ok=True)
+    fm = ["type: project", "title: My Card", "status: in-progress",
+          'summary: "One liner"', 'latest: "Did a thing"',
+          "tags: [area/tools, kind/x]",
+          'program: "[[Work Ops|Ops]]"', 'project: "[[Big Project]]"',
+          "sessionId: abc-123", "paths:", "  - /a/b", "  - /c/d"]
+    p = cards_dir / f"{slug}.md"
+    p.write_text("---\n" + "\n".join(fm) + "\n---\nbody\n\n## Sessions\n\n")
+    return p
+
+
+def test_list_json_shape_and_fields(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    card = _full_card(cards, "my-card")
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    cc.cmd_list(NS(json=True))
+    out = json.loads(capsys.readouterr().out)
+    assert isinstance(out, list) and len(out) == 1
+    c = out[0]
+    assert c["filePath"] == str(card.resolve())
+    assert c["fileName"] == "my-card"
+    assert c["title"] == "My Card"
+    assert c["status"] == "in-progress"
+    assert c["summary"] == "One liner"          # surrounding quotes stripped
+    assert c["latest"] == "Did a thing"
+    assert c["tags"] == ["area/tools", "kind/x"]
+    assert c["program"] == "Work Ops"           # wikilink unwrapped (alias dropped)
+    assert c["project"] == "Big Project"
+    assert c["sessionId"] == "abc-123"
+    assert c["paths"] == ["/a/b", "/c/d"]
+    assert c["area"] == "tools"                 # first area/ tag's slug
+    assert c["source"] == "work"
+
+
+def test_list_json_multiple_dirs_and_source(cc, tmp_path, monkeypatch, capsys):
+    work = tmp_path / "work" / "Cards"
+    personal = tmp_path / "personal" / "Cards"
+    make_card(work, "w1")
+    make_card(personal, "p1")
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": work, "personal": personal})
+    cc.cmd_list(NS(json=True))
+    out = json.loads(capsys.readouterr().out)
+    by_src = {c["fileName"]: c["source"] for c in out}
+    assert by_src == {"w1": "work", "p1": "personal"}
+
+
+def test_list_json_minimal_card_defaults(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    make_card(cards, "bare", title="Bare")  # no summary/program/tags
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    cc.cmd_list(NS(json=True))
+    c = json.loads(capsys.readouterr().out)[0]
+    assert c["title"] == "Bare"
+    assert c["program"] == "" and c["project"] == "" and c["summary"] == ""
+    assert c["tags"] == [] and c["area"] == ""
+
+
+def test_list_human_listing(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    make_card(cards, "c1", title="Card One", status="backlog")
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    cc.cmd_list(NS(json=False))
+    assert "Card One — backlog" in capsys.readouterr().out
+
+
+# ── build_workspace: window.title injection ───────────────────────────────────
+def test_build_workspace_injects_window_title(cc, tmp_path, monkeypatch):
+    monkeypatch.setattr(cc, "CACHE", tmp_path / "cache")
+    folder = tmp_path / "act"
+    folder.mkdir()
+    card = make_card(tmp_path / "Cards", "demo", title="My Card", paths=[str(folder)])
+    ws, folders = cc.build_workspace(str(card), {"title": "My Card", "paths": [str(folder)]}, None)
+    settings = json.loads(ws.read_text())["settings"]
+    assert settings["window.title"] == "My Card — ${rootName}"
+    assert "claudeCode.allowDangerouslySkipPermissions" not in settings
+
+
+def test_build_workspace_dangerous_preserves_window_title(cc, tmp_path, monkeypatch):
+    folder = tmp_path / "act"
+    folder.mkdir()
+    card = make_card(tmp_path / "Cards", "demo", title="My Card", paths=[str(folder)])
+    monkeypatch.setattr(cc, "CACHE", tmp_path / "cache")
+    ws, _ = cc.build_workspace(str(card), {"title": "My Card", "paths": [str(folder)]},
+                               None, dangerous=True)
+    settings = json.loads(ws.read_text())["settings"]
+    assert settings["window.title"] == "My Card — ${rootName}"
+    assert settings["claudeCode.allowDangerouslySkipPermissions"] is True
+    assert settings["claudeCode.initialPermissionMode"] == "bypassPermissions"
+
+
+# ── focus (osascript mocked; no real windows) ─────────────────────────────────
+def test_focus_builds_osascript_with_card_title(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "demo", title="My Special Card")
+    calls = {}
+
+    def fake_run(argv, **kw):
+        calls["argv"] = argv
+        class R:
+            returncode = 0
+            stderr = ""
+        return R()
+    monkeypatch.setattr(cc.subprocess, "run", fake_run)
+    cc.cmd_focus(NS(card=str(card)))
+    assert calls["argv"][0] == cc.OSASCRIPT
+    assert calls["argv"][1] == "-e"
+    assert "My Special Card" in calls["argv"][2]          # title embedded in script
+    assert 'process "Code"' in calls["argv"][2]
+    assert "AXRaise" in calls["argv"][2]
+    assert "focused" in capsys.readouterr().out
+
+
+def test_focus_failure_is_reported_not_raised(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "demo", title="My Card")
+
+    def fake_run(argv, **kw):
+        class R:
+            returncode = 1
+            stderr = "not authorized to send Apple events"
+        return R()
+    monkeypatch.setattr(cc.subprocess, "run", fake_run)
+    cc.cmd_focus(NS(card=str(card)))  # must not raise
+    err = capsys.readouterr().err
+    assert "could not raise the window" in err
+    assert "Accessibility" in err
