@@ -25,8 +25,12 @@ Commands:
                                     field; surfaces like the board delegate here, never edit files).
   cardctl list [--json]             List every card across the Cards/ folders. With --json, emit a
                                     JSON array (one object per card) the board consumes directly.
-  cardctl focus <card.md>           Bring the card's VS Code window to the front (macOS; needs
-                                    Accessibility permission — best-effort, never crashes).
+  cardctl focus <card.md>           Bring the card's VS Code window to the front. Prefers a
+                                    deterministic focus-by-id via Hammerspoon (`hs`); falls back
+                                    to AppleScript AXRaise-by-title. Best-effort, never crashes.
+  cardctl windows [--json]          List the open VS Code windows (via Hammerspoon) mapped to
+                                    their cards. --json emits {available, windows:[…]} so the
+                                    board can tell "no windows" apart from "engine unavailable".
 
 macOS only for now. `code` and `open` are resolved by absolute path (works under GUI launchers
 like Obsidian Shell Commands, which run with a minimal PATH).
@@ -59,6 +63,7 @@ def find_exe(name, fallbacks):
 CODE = find_exe("code", ["/opt/homebrew/bin/code", "/usr/local/bin/code"])
 OPEN = find_exe("open", ["/usr/bin/open"])
 OSASCRIPT = find_exe("osascript", ["/usr/bin/osascript"])
+HS = find_exe("hs", ["/opt/homebrew/bin/hs", "/usr/local/bin/hs"])  # Hammerspoon CLI
 
 PROJECTS = Path.home() / ".claude" / "projects"
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "session-cards"
@@ -928,18 +933,178 @@ def cmd_list(args):
             print(f"{c['title']} — {c['status'] or '?'}")
 
 
+# ── Hammerspoon window enumeration ─────────────────────────────────────────────
+# The deterministic engine for window targeting is Hammerspoon: `hs -c '<lua>'`
+# runs Lua in the running Hammerspoon and prints the return value. We enumerate the
+# VS Code (`Code`) windows and read each one's title, which `build_workspace` stamps
+# as "<card title> — <rootName>" (VS Code shows "<title> — <rootName> (Workspace)",
+# plus " — Modified" when the window is dirty). The "<rootName>" segment is the card
+# slug (== the activity-folder basename == the card filename stem).
+
+# Lua: collect {id,title} for every window whose app is "Code", as a JSON array.
+_HS_LIST_WINDOWS_LUA = (
+    'local t={} for _,w in ipairs(hs.window.allWindows()) do '
+    'local a=w:application() if a and a:name()=="Code" then '
+    't[#t+1]={id=w:id(), title=w:title() or ""} end end '
+    'return hs.json.encode(t)'
+)
+
+
+class HsUnavailable(Exception):
+    """Hammerspoon couldn't be driven (not installed, not running / ipc port
+    unreachable, non-zero exit, or unparseable output). Carries a short reason."""
+
+
+def _run_hs(lua):
+    """Run a Lua snippet via `hs -c` and return its stdout. Raises HsUnavailable on
+    any failure. Factored out so tests can monkeypatch the subprocess call."""
+    try:
+        r = subprocess.run([HS, "-c", lua], capture_output=True, text=True, timeout=10)
+    except FileNotFoundError:
+        raise HsUnavailable("hs (Hammerspoon CLI) not found")
+    except (OSError, subprocess.SubprocessError) as e:
+        raise HsUnavailable(f"could not run hs: {e}")
+    out, err = (r.stdout or "").strip(), (r.stderr or "").strip()
+    # `hs` prints an ipc message-port error to stdout/stderr when Hammerspoon isn't
+    # running (or the ipc module isn't loaded); surface that as unavailable, not data.
+    if "message port" in (out + err).lower():
+        raise HsUnavailable("Hammerspoon not running (ipc message port unreachable)")
+    if r.returncode != 0:
+        raise HsUnavailable(err or out or f"hs exited {r.returncode}")
+    # Hammerspoon prints console/preamble lines (e.g. "-- Loading extension: json")
+    # ahead of a snippet's return value the first time an extension lazy-loads —
+    # drop those `--` lines so the caller parses only the actual return value.
+    return "\n".join(
+        ln for ln in out.splitlines() if not ln.lstrip().startswith("--")
+    ).strip()
+
+
+def hs_code_windows():
+    """Enumerate open VS Code windows via Hammerspoon. Returns a list of
+    {"id": int, "title": str}. Raises HsUnavailable on any engine failure."""
+    out = _run_hs(_HS_LIST_WINDOWS_LUA)
+    try:
+        data = json.loads(out) if out else []
+    except ValueError:
+        raise HsUnavailable(f"unparseable hs output: {out[:80]!r}")
+    if not isinstance(data, list):
+        raise HsUnavailable("unexpected hs output (not a list)")
+    wins = []
+    for w in data:
+        if isinstance(w, dict) and "id" in w:
+            wins.append({"id": int(w["id"]), "title": str(w.get("title") or "")})
+    return wins
+
+
+def slug_from_window_title(title):
+    """Parse the card slug out of a VS Code window title.
+
+    VS Code renders our generated windows as "<card title> — <rootName> (Workspace)",
+    with a trailing " — Modified" when the window is dirty. The "<rootName>" segment is
+    the card slug. Strip the trailing " — Modified" then " (Workspace)", then take the
+    substring after the LAST " — " (em-dash, U+2014, space-padded) so a card title that
+    itself contains " — " is handled. Returns None when there's no " — " separator (e.g.
+    a manually-opened folder window)."""
+    t = (title or "").strip()
+    SEP = " — "  # space + em-dash + space
+    for suffix in (SEP + "Modified", " (Workspace)"):
+        if t.endswith(suffix):
+            t = t[: -len(suffix)].rstrip()
+    idx = t.rfind(SEP)
+    if idx == -1:
+        return None
+    return t[idx + len(SEP):].strip() or None
+
+
+def stem_to_card():
+    """Map {card filename stem: card filepath} across every CARDS_DIRS folder — for
+    resolving a window's slug back to its card file."""
+    out = {}
+    for cd in CARDS_DIRS.values():
+        if Path(cd).is_dir():
+            for c in sorted(Path(cd).glob("*.md")):
+                out.setdefault(c.stem, c)
+    return out
+
+
+def cmd_windows(args):
+    """List the open VS Code windows (via Hammerspoon) mapped to their cards. The
+    board reads `--json` to drive its session panel (open vs recently-closed). The
+    JSON is an OBJECT, not a bare array, so the board can distinguish "no windows
+    open" (available:true, windows:[]) from "engine unavailable" (available:false) —
+    in which case we still exit 0 so the board degrades rather than hard-erroring."""
+    try:
+        wins = hs_code_windows()
+    except HsUnavailable as e:
+        if args.json:
+            print(json.dumps({"available": False, "error": str(e), "windows": []},
+                             ensure_ascii=False))
+        else:
+            print(f"cardctl: windows unavailable: {e}", file=sys.stderr)
+        return
+    by_stem = stem_to_card()
+    rows = []
+    for w in wins:
+        slug = slug_from_window_title(w["title"])
+        card = by_stem.get(slug) if slug else None
+        rows.append({
+            "id": w["id"], "title": w["title"],
+            "slug": slug,
+            "filePath": str(card.resolve()) if card else None,
+        })
+    if args.json:
+        print(json.dumps({"available": True, "windows": rows}, ensure_ascii=False))
+    else:
+        if not rows:
+            print("(no VS Code windows open)")
+        for r in rows:
+            print(f"  {r['id']}  {r['slug'] or '(unmatched)'}  — {r['title']}")
+
+
+def _focus_by_id(win_id):
+    """Focus a window by its Hammerspoon id. Returns True on success, False if the
+    window is gone; raises HsUnavailable if the engine itself can't be driven."""
+    out = _run_hs(f'local w=hs.window.get({int(win_id)}); '
+                  'if w then w:focus(); return "ok" end return "nf"')
+    return out == "ok"
+
+
+def _focus_by_id_for_card(slug):
+    """Best-effort deterministic focus: enumerate windows via Hammerspoon, find the
+    one whose mapped slug matches this card's slug, and focus it by id. Returns True
+    if a matching window was focused, False if none matched. Raises HsUnavailable if
+    Hammerspoon can't be driven (so the caller falls back to AppleScript)."""
+    for w in hs_code_windows():
+        if slug_from_window_title(w["title"]) == slug:
+            return _focus_by_id(w["id"])
+    return False
+
+
 def cmd_focus(args):
     """Bring the VS Code window for a card to the front (the deterministic
     window-targeting primitive; complements launch's best-effort activate nudge).
 
-    There is no per-window targeting param on the resume URI, so we drive macOS
-    System Events: set the `Code` process frontmost, then AXRaise the window whose
-    title contains the card title (`build_workspace` stamps `window.title` so each
-    card's window is identifiable). Needs Accessibility permission at runtime —
-    if the AppleScript fails (perm not granted, no match), we print a clear note
-    and return rather than crash. Best-effort by design."""
+    Prefers Hammerspoon: enumerate the `Code` windows, match the one whose title maps
+    to this card's slug (the card filename stem == the activity-folder basename, which
+    `build_workspace` stamps into `window.title`), and focus it by id. If Hammerspoon
+    is unavailable OR no window matches, fall back to driving macOS System Events:
+    set the `Code` process frontmost, then AXRaise the window whose title contains the
+    card title. The AppleScript path needs Accessibility permission at runtime — if it
+    fails (perm not granted, no match), we print a clear note and return rather than
+    crash. Best-effort by design."""
     fm, _ = read_card(args.card)
     title = unquote(fm.get("title") or Path(args.card).stem)
+    slug = Path(args.card).stem
+
+    # Preferred: deterministic focus-by-id via Hammerspoon.
+    try:
+        if _focus_by_id_for_card(slug):
+            print(f"focused VS Code window for {title!r} (by id)")
+            return
+        # Hammerspoon worked but no window matched — fall through to AppleScript.
+    except HsUnavailable:
+        pass  # engine unavailable — fall back to AppleScript AXRaise-by-title
+
     # AppleScript: raise the first Code window whose title contains the card title.
     # Escape double quotes/backslashes in the title for embedding in the script.
     safe = title.replace("\\", "\\\\").replace('"', '\\"')
@@ -1049,9 +1214,17 @@ def main():
                      help="emit a JSON array (one object per card) for the board to consume")
     pls.set_defaults(func=cmd_list)
 
-    pf = sub.add_parser("focus", help="bring the card's VS Code window to the front (macOS Accessibility)")
+    pf = sub.add_parser("focus", help="bring the card's VS Code window to the front "
+                                      "(Hammerspoon focus-by-id; AppleScript fallback)")
     pf.add_argument("card")
     pf.set_defaults(func=cmd_focus)
+
+    pwin = sub.add_parser("windows", help="list open VS Code windows mapped to cards "
+                                          "(via Hammerspoon; --json for the board)")
+    pwin.add_argument("--json", action="store_true",
+                      help="emit {available, windows:[…]} so the board can tell "
+                           "'no windows' from 'engine unavailable'")
+    pwin.set_defaults(func=cmd_windows)
 
     pw = sub.add_parser("which", help="which card owns a folder (reverse lookup; for the session-start hook)")
     pw.add_argument("folder", nargs="?", help="folder to resolve (default: cwd)")

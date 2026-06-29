@@ -20,7 +20,8 @@ cardctl link   <card.md> --session ID # pin a specific session id (e.g. one that
 cardctl new    <slug> --title …   # scaffold a card in the Domain vault's Cards/ folder
 cardctl set-status <card.md> <s>  # set lifecycle status (single writer of the field; surfaces delegate here)
 cardctl list [--json]             # list all cards across the Cards/ folders; --json = the board's read interface
-cardctl focus  <card.md>          # bring the card's VS Code window to the front (macOS Accessibility)
+cardctl focus  <card.md>          # bring the card's VS Code window to the front (Hammerspoon focus-by-id; AppleScript fallback)
+cardctl windows [--json]          # list open VS Code windows mapped to cards (via Hammerspoon); --json = board read interface
 cardctl reconcile [--apply]       # file folders of cards marked archived (R9; done is left in place)
 cardctl which [folder] [--record] # which card owns a folder (reverse lookup; powers the SessionStart hook)
 cardctl deploy <work|personal|all> [--apply]  # push the canonical surfaces to a vault + ~/bin (R10)
@@ -55,15 +56,43 @@ no sessions; the board sorts on it for "most recently worked" and a live/recent 
 values are unquoted and `ensure_ascii=False` keeps em-dashes etc. literal. Without `--json` it prints a
 brief human listing (`title — status`). This is the read keystone for the board's hierarchy view.
 
+## `windows` — open VS Code windows mapped to cards (Hammerspoon)
+
+`cardctl windows --json` enumerates the open VS Code windows via **Hammerspoon** (`hs -c '<lua>'` runs Lua
+in the running Hammerspoon and prints the result) and maps each to its card. Each generated window's title
+is `"<card title> — <rootName> (Workspace)"` (`build_workspace` stamps the `window.title`; VS Code appends
+` (Workspace)` and a trailing ` — Modified` when dirty), and the `<rootName>` segment is the card **slug**
+(== the activity-folder basename == the card filename stem). `slug_from_window_title` strips those suffixes
+and takes the substring after the *last* ` — ` separator, then we look the slug up against `{stem: card}`
+across every `Cards/` folder.
+
+The JSON is an **object, not a bare array**, so the board can tell *no windows open* from *engine
+unavailable*:
+
+```json
+{"available": true,
+ "windows": [{"id": 19146, "title": "…",
+              "slug": "session-card-board", "filePath": "/…/session-card-board.md"}, …]}
+```
+
+`slug`/`filePath` are `null` for an unmatched window (manually-opened folder, or a slug with no card). On
+engine failure (Hammerspoon not installed/running, ipc message-port unreachable, bad output) it emits
+`{"available": false, "error": "<reason>", "windows": []}` and **exits 0** — so the board reads the JSON
+and degrades, rather than treating it as a hard error. Without `--json` it prints a brief human listing.
+This powers the board's session-panel v2 (open vs recently-closed). **Depends on Hammerspoon** with the ipc
+module loaded (`hs` on PATH).
+
 ## `focus` — window-targeting primitive
 
 `cardctl focus <card.md>` brings the VS Code window for that card to the front. VS Code's resume URI has
-no window-targeting param, so this is the deterministic complement to launch's best-effort `activate`
-nudge: `build_workspace` stamps a `window.title` (`"<card title> — ${rootName}"`) into each generated
-workspace so its window is identifiable, and `focus` drives macOS System Events (via `osascript`) to set
-the `Code` process frontmost and `AXRaise` the window whose title contains the card title. **Needs macOS
-Accessibility permission** for the launching app (System Settings → Privacy & Security → Accessibility);
-it's best-effort — if the AppleScript fails it prints a clear message and returns rather than crashing.
+no window-targeting param, so this is the deterministic complement to launch's best-effort `activate` nudge.
+It prefers a **Hammerspoon focus-by-id**: enumerate the `Code` windows (as `windows` does), find the one
+whose title maps to this card's slug (the card filename stem, stamped into `window.title` by
+`build_workspace`), and focus it by id (`hs.window.get(<id>):focus()`). **If Hammerspoon is unavailable, or
+no window matches, it falls back** to driving macOS System Events (via `osascript`): set the `Code` process
+frontmost and `AXRaise` the window whose title contains the card title. The AppleScript path **needs macOS
+Accessibility permission** for the launching app (System Settings → Privacy & Security → Accessibility); the
+whole thing is best-effort — if both paths fail it prints a clear message and returns rather than crashing.
 (Launch is intentionally left as-is — the standalone `focus` is the safe primitive; wiring it into launch
 is deferred so launch can never be blocked on an un-granted permission.)
 
@@ -113,9 +142,11 @@ It loads the extension-less `cardctl` as a module (`conftest.py`) and covers `pa
 `find_card_for`/`which` (+ the `.card` cache, stale-cache validation, and legacy-marker
 migration), `resolve_session` pin
 precedence, `link` (pin + `## Sessions` history + dedup), `reconcile` (dry-run, archived-only,
-shared-folder skip), `ensure_primary_folder`, and `deploy` (the merge helpers + surface application
-against a temp vault, asserting foreign settings survive). All hermetic — temp dirs / fixtures,
-no real vault or `~/.claude/projects` writes.
+shared-folder skip), `ensure_primary_folder`, `deploy` (the merge helpers + surface application
+against a temp vault, asserting foreign settings survive), `slug_from_window_title`,
+`windows --json` (matched/unmatched/engine-unavailable), and `focus` (id-upgrade + AppleScript
+fallback). All hermetic — temp dirs / fixtures, the `hs`/`osascript` subprocess always mocked (never
+a real Hammerspoon call or window raise), no real vault or `~/.claude/projects` writes.
 
 ## Bringing existing work into the system (import process)
 
@@ -251,9 +282,13 @@ Note: `cardctl` only reads `paths`/`sessionId`; the rest are for the board/graph
 - ✅ `list` — JSON read interface for the board (full card model, wikilink-unwrap, `area` derivation,
   `source` domain key, `lastActive` recency timestamp) + a brief human listing; tested for
   shape/fields/multi-vault.
-- ✅ `focus` — raises a card's VS Code window via `osascript`/System Events (window-targeting primitive);
-  best-effort, reports cleanly if Accessibility permission is missing. Tested with `osascript` mocked.
-- ✅ **pytest suite** (`tests/`) — 49 hermetic tests across all commands + the deploy merges.
+- ✅ `focus` — raises a card's VS Code window. Prefers Hammerspoon focus-by-id (matches the window whose
+  slug == the card's), falling back to `osascript`/System Events AXRaise-by-title; best-effort, reports
+  cleanly if Hammerspoon is unavailable and Accessibility permission is missing. Tested with both mocked.
+- ✅ `windows` — lists open VS Code windows (via Hammerspoon) mapped to cards; `--json` emits
+  `{available, windows:[…]}` so the board distinguishes "no windows" from "engine unavailable" (exits 0
+  either way). Powers the board's session-panel v2. Tested with the `hs` subprocess mocked.
+- ✅ **pytest suite** (`tests/`) — 61 hermetic tests across all commands + the deploy merges.
 
 ## Not yet built (next)
 - **Phase 2 — the custom Kanban board** (a bespoke VS Code extension that renders the cards and
