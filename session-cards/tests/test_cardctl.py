@@ -540,10 +540,14 @@ def test_focus_builds_osascript_with_card_title(cc, tmp_path, monkeypatch, capsy
     calls = {}
 
     def fake_run(argv, **kw):
-        calls["argv"] = argv
         class R:
             returncode = 0
             stderr = ""
+            stdout = ""
+        if argv[0] == cc.HS:           # no Hammerspoon window matches → fall back
+            R.stdout = "[]"
+            return R()
+        calls["argv"] = argv           # the AppleScript (osascript) call
         return R()
     monkeypatch.setattr(cc.subprocess, "run", fake_run)
     cc.cmd_focus(NS(card=str(card)))
@@ -561,14 +565,180 @@ def test_focus_failure_is_reported_not_raised(cc, tmp_path, monkeypatch, capsys)
 
     def fake_run(argv, **kw):
         class R:
-            returncode = 1
-            stderr = "not authorized to send Apple events"
+            stdout = ""
+        if argv[0] == cc.HS:           # Hammerspoon enumerates no matching window
+            R.returncode = 0
+            R.stderr = ""
+            R.stdout = "[]"
+            return R()
+        R.returncode = 1               # AppleScript fallback fails (no Accessibility)
+        R.stderr = "not authorized to send Apple events"
         return R()
     monkeypatch.setattr(cc.subprocess, "run", fake_run)
     cc.cmd_focus(NS(card=str(card)))  # must not raise
     err = capsys.readouterr().err
     assert "could not raise the window" in err
     assert "Accessibility" in err
+
+
+# ── slug_from_window_title (pure) ──────────────────────────────────────────────
+def test_slug_from_window_title_basic(cc):
+    assert cc.slug_from_window_title(
+        "Session card board (Phase 2) — session-card-board (Workspace)"
+    ) == "session-card-board"
+
+
+def test_slug_from_window_title_multi_emdash_takes_last(cc):
+    # Card title itself contains " — " → the slug is after the LAST separator.
+    assert cc.slug_from_window_title(
+        "Axon whitepaper — sign-off — axon-whitepaper-signoff (Workspace)"
+    ) == "axon-whitepaper-signoff"
+
+
+def test_slug_from_window_title_modified_suffix(cc):
+    assert cc.slug_from_window_title(
+        "Foo — determine-card-hiearchy (Workspace) — Modified"
+    ) == "determine-card-hiearchy"
+    # …and without the (Workspace) segment too.
+    assert cc.slug_from_window_title(
+        "Foo — determine-card-hiearchy — Modified"
+    ) == "determine-card-hiearchy"
+
+
+def test_slug_from_window_title_none_without_separator(cc):
+    assert cc.slug_from_window_title("manually-opened-folder") is None
+    assert cc.slug_from_window_title("") is None
+
+
+# ── hs_code_windows / windows (hs subprocess mocked) ────────────────────────────
+def _fake_hs(monkeypatch, cc, *, stdout="", stderr="", returncode=0, raises=None):
+    """Monkeypatch subprocess.run as `hs` would behave (no real Hammerspoon)."""
+    def fake_run(argv, **kw):
+        assert argv[0] == cc.HS and argv[1] == "-c"
+        if raises is not None:
+            raise raises
+        class R:
+            pass
+        R.stdout, R.stderr, R.returncode = stdout, stderr, returncode
+        return R()
+    monkeypatch.setattr(cc.subprocess, "run", fake_run)
+
+
+def test_hs_code_windows_parses_json(cc, monkeypatch):
+    _fake_hs(monkeypatch, cc,
+             stdout='[{"id":19146,"title":"X — session-card-board (Workspace)"}]')
+    wins = cc.hs_code_windows()
+    assert wins == [{"id": 19146, "title": "X — session-card-board (Workspace)"}]
+
+
+def test_hs_code_windows_raises_when_port_unreachable(cc, monkeypatch):
+    _fake_hs(monkeypatch, cc, stderr="hs: can't access … message port")
+    with pytest.raises(cc.HsUnavailable):
+        cc.hs_code_windows()
+
+
+def test_hs_code_windows_raises_on_missing_binary(cc, monkeypatch):
+    _fake_hs(monkeypatch, cc, raises=FileNotFoundError())
+    with pytest.raises(cc.HsUnavailable):
+        cc.hs_code_windows()
+
+
+def test_windows_json_maps_matched_and_unmatched(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    matched = make_card(cards, "session-card-board", title="Board")
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    _fake_hs(monkeypatch, cc, stdout=json.dumps([
+        {"id": 19146, "title": "Board — session-card-board (Workspace)"},
+        {"id": 222, "title": "no-card-here — unknown-slug (Workspace)"},
+        {"id": 333, "title": "a manually opened folder"},   # no separator → slug None
+    ]))
+    cc.cmd_windows(NS(json=True))
+    out = json.loads(capsys.readouterr().out)
+    assert out["available"] is True
+    w = {r["id"]: r for r in out["windows"]}
+    assert w[19146]["slug"] == "session-card-board"
+    assert w[19146]["filePath"] == str(matched.resolve())
+    assert w[222]["slug"] == "unknown-slug" and w[222]["filePath"] is None
+    assert w[333]["slug"] is None and w[333]["filePath"] is None
+
+
+def test_windows_json_engine_unavailable_is_available_false(cc, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": tmp_path / "Cards"})
+    _fake_hs(monkeypatch, cc, stderr="hs: can't access … message port")
+    cc.cmd_windows(NS(json=True))  # must exit 0 (return), not raise
+    out = json.loads(capsys.readouterr().out)
+    assert out["available"] is False
+    assert out["windows"] == []
+    assert out["error"]
+
+
+# ── focus: id-upgrade with AppleScript fallback (subprocess mocked) ─────────────
+def test_focus_by_id_when_window_matches(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "session-card-board", title="Board")
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        class R:
+            returncode = 0
+            stderr = ""
+        # First call: enumerate windows. Second: focus by id.
+        if "allWindows" in argv[2]:
+            R.stdout = json.dumps([{"id": 19146,
+                                    "title": "Board — session-card-board (Workspace)"}])
+        else:
+            assert "hs.window.get(19146)" in argv[2]   # focuses the matched id
+            R.stdout = "ok"
+        return R()
+    monkeypatch.setattr(cc.subprocess, "run", fake_run)
+    cc.cmd_focus(NS(card=str(card)))
+    out = capsys.readouterr().out
+    assert "by id" in out
+    # Never reached osascript (AppleScript) — both calls were to hs.
+    assert all(argv[0] == cc.HS for argv in calls)
+
+
+def test_focus_falls_back_to_applescript_when_no_window_matches(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "session-card-board", title="Board")
+    seen = {"osascript": False}
+
+    def fake_run(argv, **kw):
+        class R:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+        if argv[0] == cc.HS:
+            R.stdout = json.dumps([{"id": 1, "title": "Other — other-slug (Workspace)"}])
+        elif argv[0] == cc.OSASCRIPT:
+            seen["osascript"] = True
+        return R()
+    monkeypatch.setattr(cc.subprocess, "run", fake_run)
+    cc.cmd_focus(NS(card=str(card)))
+    assert seen["osascript"] is True               # fell back to AXRaise-by-title
+    assert "focused" in capsys.readouterr().out
+
+
+def test_focus_falls_back_to_applescript_when_hs_unavailable(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "session-card-board", title="Board")
+    seen = {"osascript": False}
+
+    def fake_run(argv, **kw):
+        class R:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+        if argv[0] == cc.HS:
+            R.stderr = "hs: can't access … message port"   # engine unavailable
+        elif argv[0] == cc.OSASCRIPT:
+            seen["osascript"] = True
+        return R()
+    monkeypatch.setattr(cc.subprocess, "run", fake_run)
+    cc.cmd_focus(NS(card=str(card)))
+    assert seen["osascript"] is True               # AppleScript fallback used
+    assert "focused" in capsys.readouterr().out
 
 
 # ── new (auto activity folder) ─────────────────────────────────────────────────
