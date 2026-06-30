@@ -420,6 +420,7 @@ def test_list_json_shape_and_fields(cc, tmp_path, monkeypatch, capsys):
     assert c["paths"] == ["/a/b", "/c/d"]
     assert c["area"] == "tools"                 # first area/ tag's slug
     assert c["source"] == "work"
+    assert c["archivedAt"] == ""                # not archived → empty
 
 
 def test_list_json_multiple_dirs_and_source(cc, tmp_path, monkeypatch, capsys):
@@ -506,6 +507,192 @@ def test_last_active_null_when_no_sessions(cc, tmp_path, monkeypatch, capsys):
     cc.cmd_list(NS(json=True))
     c = json.loads(capsys.readouterr().out)[0]
     assert c["lastActive"] is None
+
+
+# ── archivedAt in list --json ──────────────────────────────────────────────────
+def test_list_json_emits_archived_at(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    make_card(cards, "filed", status="archived",
+              extra_body="")  # body unused here
+    card = cards / "filed.md"
+    card.write_text(card.read_text().replace(
+        "status: archived\n",
+        "status: archived\narchivedAt: 2026-06-30T09:20:14.123456+08:00\n"))
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    cc.cmd_list(NS(json=True))
+    c = json.loads(capsys.readouterr().out)[0]
+    assert c["archivedAt"] == "2026-06-30T09:20:14.123456+08:00"
+
+
+# ── set_fm_field (generic surgical editor) ──────────────────────────────────────
+def test_set_fm_field_inserts_when_absent(cc):
+    doc = "---\ntitle: T\nstatus: archived\n---\nbody\n"
+    out = cc.set_fm_field(doc, "archivedAt", "2026-06-30T09:20:14+08:00")
+    assert "archivedAt: 2026-06-30T09:20:14+08:00\n" in out
+    assert out.endswith("---\nbody\n")
+
+
+def test_set_fm_field_removes_when_value_none(cc):
+    doc = "---\ntitle: T\narchivedAt: 2026-06-30T09:20:14+08:00\nstatus: archived\n---\nb\n"
+    out = cc.set_fm_field(doc, "archivedAt", None)
+    assert "archivedAt:" not in out
+    assert "title: T" in out and "status: archived" in out
+
+
+# ── archive / reinstate / delete (real git repo) ─────────────────────────────────
+def _git(repo, *argv):
+    import subprocess
+    return subprocess.run(["git", "-C", str(repo), *argv],
+                          capture_output=True, text=True, check=True)
+
+
+def _git_repo_with_folder(tmp_path, rel, name="x"):
+    """Init a git repo at tmp_path/repo with a tracked folder <rel>/<name>/ (one file
+    inside, since git doesn't track empty dirs), committed. Returns the folder path."""
+    import subprocess
+    repo = tmp_path / "repo"
+    folder = repo / rel / name
+    folder.mkdir(parents=True)
+    (folder / "README.md").write_text(f"# {name}\nwork\n")
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "init")
+    return repo, folder
+
+
+def test_archive_stamps_files_and_relocates(cc, tmp_path, monkeypatch, capsys):
+    import datetime
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(cc, "PROJECTS", projects)
+    repo, folder = _git_repo_with_folder(tmp_path, "active", "thing")
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "thing", status="in-progress", paths=[str(folder)])
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    sid = fake_transcript(projects, str(folder))
+
+    cc.cmd_archive(NS(card=str(card), json=True))
+    out = json.loads(capsys.readouterr().out)
+
+    prefix = datetime.date.today().strftime("%Y-%m-")
+    target = repo / "archive" / f"{prefix}thing"
+    assert out["ok"] and out["status"] == "archived"
+    assert out["archivedAt"]
+    assert out["moved"][0]["to"] == str(target)
+    assert out["moved"][0]["transcripts"] == 1
+    # disk: folder moved, original gone
+    assert target.is_dir() and not folder.exists()
+    # frontmatter: status + archivedAt + path updated
+    fm, _ = cc.read_card(str(card))
+    assert fm["status"] == "archived"
+    assert fm["archivedAt"]
+    assert fm["paths"][0] == str(target)
+    # transcripts relocated to the new cwd
+    assert (projects / str(target).replace("/", "-") / f"{sid}.jsonl").is_file()
+    assert not (projects / str(folder).replace("/", "-")).exists()
+
+
+def test_archive_pattern_b_skips_shared_folder(cc, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cc, "PROJECTS", tmp_path / "projects")
+    repo, folder = _git_repo_with_folder(tmp_path, "active", "shared")
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "arch", status="in-progress", paths=[str(folder)])
+    make_card(cards, "live", status="in-progress", paths=[str(folder)])
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+
+    cc.cmd_archive(NS(card=str(card), json=True))
+    out = json.loads(capsys.readouterr().out)
+    assert out["skipped"] == [str(folder)]
+    assert out["moved"] == []
+    assert folder.is_dir()                       # not moved — still live elsewhere
+    fm, _ = cc.read_card(str(card))
+    assert fm["status"] == "archived" and fm["archivedAt"]   # status + stamp still set
+
+
+def test_reinstate_reverses_move_and_clears_stamp(cc, tmp_path, monkeypatch, capsys):
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(cc, "PROJECTS", projects)
+    repo, arch_folder = _git_repo_with_folder(tmp_path, "archive", "2026-06-thing")
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "thing", status="archived", paths=[str(arch_folder)])
+    card.write_text(card.read_text().replace(
+        "status: archived\n", "status: archived\narchivedAt: 2026-06-30T09:20:14+08:00\n"))
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    sid = fake_transcript(projects, str(arch_folder))
+
+    cc.cmd_reinstate(NS(card=str(card), json=True))
+    out = json.loads(capsys.readouterr().out)
+
+    active = repo / "active" / "thing"           # date prefix stripped
+    assert out["ok"] and out["status"] == "in-progress"
+    assert out["moved"][0]["to"] == str(active)
+    assert active.is_dir() and not arch_folder.exists()
+    fm, _ = cc.read_card(str(card))
+    assert fm["status"] == "in-progress"
+    assert "archivedAt" not in fm                # cleared
+    assert fm["paths"][0] == str(active)
+    assert (projects / str(active).replace("/", "-") / f"{sid}.jsonl").is_file()
+
+
+def test_reinstate_refuses_non_archived(cc, tmp_path, monkeypatch):
+    monkeypatch.setattr(cc, "PROJECTS", tmp_path / "projects")
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "live", status="in-progress",
+                     paths=[str(tmp_path / "active" / "x")])
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    with pytest.raises(SystemExit):
+        cc.cmd_reinstate(NS(card=str(card), json=False))
+
+
+def test_reinstate_refuses_when_active_dest_exists(cc, tmp_path, monkeypatch):
+    monkeypatch.setattr(cc, "PROJECTS", tmp_path / "projects")
+    repo, arch_folder = _git_repo_with_folder(tmp_path, "archive", "2026-06-thing")
+    (repo / "active" / "thing").mkdir(parents=True)   # would clobber
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "thing", status="archived", paths=[str(arch_folder)])
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    with pytest.raises(SystemExit):
+        cc.cmd_reinstate(NS(card=str(card), json=False))
+    assert arch_folder.is_dir()                   # nothing moved
+
+
+def test_delete_removes_folder_and_card_with_confirm(cc, tmp_path, monkeypatch, capsys):
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(cc, "PROJECTS", projects)
+    repo, arch_folder = _git_repo_with_folder(tmp_path, "archive", "2026-06-thing")
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "thing", status="archived", paths=[str(arch_folder)])
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    fake_transcript(projects, str(arch_folder))
+
+    cc.cmd_delete(NS(card=str(card), confirm="thing", json=True))
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] and out["deleted"] == [str(arch_folder)]
+    assert not arch_folder.exists()              # folder gone
+    assert not card.exists()                     # card note gone
+    assert not (projects / str(arch_folder).replace("/", "-")).exists()  # transcripts gone
+
+
+def test_delete_refuses_wrong_confirm(cc, tmp_path, monkeypatch):
+    monkeypatch.setattr(cc, "PROJECTS", tmp_path / "projects")
+    repo, arch_folder = _git_repo_with_folder(tmp_path, "archive", "2026-06-thing")
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "thing", status="archived", paths=[str(arch_folder)])
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    with pytest.raises(SystemExit):
+        cc.cmd_delete(NS(card=str(card), confirm="wrong", json=False))
+    assert card.exists() and arch_folder.is_dir()  # nothing removed
+
+
+def test_delete_refuses_non_archived(cc, tmp_path, monkeypatch):
+    monkeypatch.setattr(cc, "PROJECTS", tmp_path / "projects")
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "live", status="in-progress")
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    with pytest.raises(SystemExit):
+        cc.cmd_delete(NS(card=str(card), confirm="live", json=False))
+    assert card.exists()
 
 
 # ── build_workspace: window.title injection ───────────────────────────────────

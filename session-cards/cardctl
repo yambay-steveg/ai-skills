@@ -464,11 +464,13 @@ def card_under_cards_dirs(path):
                for cd in CARDS_DIRS.values())
 
 
-def set_status_in_text(text, status):
-    """Return `text` with its frontmatter `status:` set to `status`, leaving the
-    rest byte-for-byte (surgical single-line edit — body, other fields, quoting and
-    key order untouched, so the vault git diff stays minimal). Replaces a `status:`
-    line in place; if the frontmatter has none, inserts one before the closing `---`."""
+def set_fm_field(text, key, value):
+    """Return `text` with frontmatter `key:` set to `value`, leaving the rest
+    byte-for-byte (surgical single-line edit — body, other fields, quoting and key
+    order untouched, so the vault git diff stays minimal). Replaces a `key:` line in
+    place; if the frontmatter has none, inserts one before the closing `---`. When
+    `value` is None the line is *removed* (and none inserted) — used to clear
+    `archivedAt` on reinstate."""
     out, in_fm, seen_open, wrote = [], False, False, False
     for ln in text.splitlines(keepends=True):
         if ln.strip() == "---":
@@ -476,14 +478,98 @@ def set_status_in_text(text, status):
                 seen_open = in_fm = True
                 out.append(ln); continue
             if in_fm:
-                if not wrote:
-                    out.append(f"status: {status}\n"); wrote = True
+                if value is not None and not wrote:
+                    out.append(f"{key}: {value}\n"); wrote = True
                 in_fm = False
                 out.append(ln); continue
-        if in_fm and ln.startswith("status:"):
-            out.append(f"status: {status}\n"); wrote = True; continue
+        if in_fm and ln.startswith(f"{key}:"):
+            if value is not None and not wrote:
+                out.append(f"{key}: {value}\n"); wrote = True
+            continue  # value is None → drop the line; or a dup → drop it
         out.append(ln)
     return "".join(out)
+
+
+def set_status_in_text(text, status):
+    """Surgically set the frontmatter `status:` field (see {@link set_fm_field})."""
+    return set_fm_field(text, "status", status)
+
+
+def now_iso():
+    """Timezone-aware ISO-8601 timestamp in the local tz (AWST for Steve) — the
+    `archivedAt` / `lastActive` format."""
+    return datetime.datetime.now().astimezone().isoformat()
+
+
+# ── Card-folder moves (archive ⇄ active), shared by reconcile/archive/reinstate ──
+
+def _count_transcripts(folder):
+    """Number of session transcripts (`*.jsonl`) recorded for `folder`'s cwd."""
+    proj = PROJECTS / encode_cwd(folder)
+    return len(list(proj.glob("*.jsonl"))) if proj.is_dir() else 0
+
+
+def _relocate_transcripts(src, dst):
+    """Move `src`'s session-transcript project dir to `dst`'s, so a moved card's
+    folder still resolves to its sessions (resume keeps working post-move). Returns
+    the count relocated; no-op (0) when `src` has no transcripts."""
+    old_proj = PROJECTS / encode_cwd(src)
+    if not old_proj.is_dir():
+        return 0
+    new_proj = PROJECTS / encode_cwd(dst)
+    new_proj.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for item in old_proj.iterdir():
+        subprocess.run(["mv", str(item), str(new_proj / item.name)], check=True)
+        n += 1
+    try:
+        old_proj.rmdir()
+    except OSError:
+        pass
+    return n
+
+
+def _move_card_folder(card_path, src, raw_src, repo, dst, commit_msg):
+    """Move a card's activity folder `src` → `dst` within its task `repo` (across the
+    active/archive boundary), relocate its session transcripts, and update the card's
+    `paths` line (`raw_src` → `dst`). `git mv` with a plain-move-then-add fallback for
+    untracked folders; commits in `repo`. Returns the count of transcripts relocated."""
+    Path(dst).parent.mkdir(parents=True, exist_ok=True)
+    rel_src = src[len(repo) + 1:]
+    rel_dst = dst[len(repo) + 1:]
+    r = subprocess.run(["git", "-C", repo, "mv", rel_src, rel_dst])
+    if r.returncode != 0:  # folder not tracked — fall back to plain move + add
+        subprocess.run(["mv", src, dst], check=True)
+        subprocess.run(["git", "-C", repo, "add", rel_dst], check=True)
+    subprocess.run(["git", "-C", repo, "commit", "-q", "-m", commit_msg], check=True)
+    n_tx = _relocate_transcripts(src, dst)
+    # update the card's path (vault file; rides the vault auto-backup)
+    new_text = Path(card_path).read_text().replace(f"- {raw_src}", f"- {dst}", 1)
+    Path(card_path).write_text(new_text)
+    return n_tx
+
+
+def _all_card_files():
+    """Every card `.md` across the configured Cards/ folders, sorted."""
+    cards = []
+    for cd in CARDS_DIRS.values():
+        if cd.is_dir():
+            cards += sorted(cd.glob("*.md"))
+    return cards
+
+
+def _live_folder_refs(exclude_card):
+    """Expanded folder paths referenced by any *non-archived* card other than
+    `exclude_card` — R14 Pattern B: such a folder must not be moved or deleted."""
+    refs = set()
+    for c in _all_card_files():
+        if expand(str(c)) == expand(str(exclude_card)):
+            continue
+        fm, _ = read_card(c)
+        if str(fm.get("status") or "").strip().lower() == "archived":
+            continue
+        refs.update(expand(p) for p in (fm.get("paths") or []))
+    return refs
 
 
 def cmd_set_status(args):
@@ -611,37 +697,179 @@ def cmd_reconcile(args):
         print("reconcile: nothing to do.")
         return
     for c, p, raw, repo, leaf, target, text in todo:
-        old_proj = PROJECTS / encode_cwd(p)
-        n_tx = len(list(old_proj.glob("*.jsonl"))) if old_proj.is_dir() else 0
+        n_tx = _count_transcripts(p)
         tx_note = f"  (+{n_tx} session transcript(s) relocated)" if n_tx else ""
         print(f"{'APPLY' if args.apply else 'DRY '}  {p}\n        → {target}{tx_note}   [{c.name}]")
         if not args.apply:
             continue
-        Path(repo, "archive").mkdir(exist_ok=True)
-        rel_src = p[len(repo) + 1:]
-        rel_dst = target[len(repo) + 1:]
-        r = subprocess.run(["git", "-C", repo, "mv", rel_src, rel_dst])
-        if r.returncode != 0:  # folder not tracked — fall back to plain move + add
-            subprocess.run(["mv", p, target], check=True)
-            subprocess.run(["git", "-C", repo, "add", rel_dst], check=True)
-        subprocess.run(["git", "-C", repo, "commit", "-q", "-m", f"Archive: {leaf}"], check=True)
-        # Relocate the activity folder's session transcripts so the archived folder still
-        # resolves to its sessions (resume keeps working post-archive).
-        if old_proj.is_dir():
-            new_proj = PROJECTS / encode_cwd(target)
-            new_proj.mkdir(parents=True, exist_ok=True)
-            for item in old_proj.iterdir():
-                subprocess.run(["mv", str(item), str(new_proj / item.name)], check=True)
-            try:
-                old_proj.rmdir()
-            except OSError:
-                pass
-        # update the card's path (vault file; rides the vault auto-backup)
-        new_text = c.read_text().replace(f"- {raw}", f"- {target}", 1)
-        c.write_text(new_text)
-        print(f"        moved + committed in {Path(repo).name}; card path updated{tx_note}")
+        # Stamp archivedAt if the card was marked archived without one (e.g. via the
+        # bulk menu) so the board's archive view can sort it. Do it before the move,
+        # which re-reads & rewrites the card's path line.
+        fm, _ = read_card(c)
+        if not str(fm.get("archivedAt") or "").strip():
+            c.write_text(set_fm_field(c.read_text(), "archivedAt", now_iso()))
+        moved = _move_card_folder(c, p, raw, repo, target, f"Archive: {leaf}")
+        note = f"  (+{moved} session transcript(s) relocated)" if moved else ""
+        print(f"        moved + committed in {Path(repo).name}; card path updated{note}")
     if not args.apply:
         print("\n(dry run — rerun with --apply to perform the moves)")
+
+
+def _emit(args, result, human):
+    """Print a command result as JSON (board contract) or a human line."""
+    if getattr(args, "json", False):
+        print(json.dumps(result, ensure_ascii=False))
+    else:
+        print(human)
+
+
+def cmd_archive(args):
+    """Archive a card now (R9, board-triggered): set status→archived, stamp
+    `archivedAt`, and file each active/ folder to archive/YYYY-MM-<x> (relocating its
+    session transcripts). The immediate, single-card equivalent of `reconcile --apply`
+    plus the archivedAt stamp. R14 Pattern B: a folder shared with a still-live card
+    is NOT moved (status + archivedAt are still set), and reported under `skipped`."""
+    card = args.card
+    if not Path(card).is_file():
+        die(f"{card}: no such card")
+    if not card_under_cards_dirs(card):
+        die(f"{card}: not inside a configured Cards/ folder")
+    fm, text = read_card(card)
+    paths = [(raw, expand(raw)) for raw in (fm.get("paths") or [])]
+    live = _live_folder_refs(card)
+    prefix = datetime.date.today().strftime("%Y-%m-")
+    stamp = now_iso()
+
+    # Frontmatter first; _move_card_folder re-reads & rewrites the path line afterwards.
+    text = set_fm_field(text, "status", "archived")
+    text = set_fm_field(text, "archivedAt", stamp)
+    Path(card).write_text(text)
+
+    moved, skipped = [], []
+    for raw, p in paths:
+        if "/active/" not in p or not Path(p).is_dir():
+            continue
+        if p in live:
+            skipped.append(p)
+            continue
+        repo, _, _ = p.partition("/active/")
+        leaf = Path(p).name
+        target = f"{repo}/archive/{prefix}{leaf}"
+        n_tx = _move_card_folder(card, p, raw, repo, target, f"Archive: {leaf}")
+        moved.append({"from": p, "to": target, "transcripts": n_tx})
+
+    result = {"ok": True, "status": "archived", "archivedAt": stamp,
+              "moved": moved, "skipped": skipped}
+    lines = [f"{Path(card).name}: archived (archivedAt {stamp})"]
+    for m in moved:
+        n = m["transcripts"]
+        lines.append(f"  filed {m['from']}\n        → {m['to']}"
+                     + (f"  (+{n} transcript(s))" if n else ""))
+    for s in skipped:
+        lines.append(f"  SKIP (shared with a live card): {s}")
+    _emit(args, result, "\n".join(lines))
+
+
+def cmd_reinstate(args):
+    """Un-archive a card (the reverse of archive): set status→in-progress, clear
+    `archivedAt`, and move each archive/YYYY-MM-<x> folder back to active/<x>
+    (relocating transcripts back). Refuses a non-archived card; refuses when the
+    active/ destination already exists (no clobber)."""
+    card = args.card
+    if not Path(card).is_file():
+        die(f"{card}: no such card")
+    if not card_under_cards_dirs(card):
+        die(f"{card}: not inside a configured Cards/ folder")
+    fm, text = read_card(card)
+    status = str(fm.get("status") or "").strip().lower()
+    if status != "archived":
+        die(f"{Path(card).name}: not archived (status={status or '?'}) — "
+            "reinstate only applies to archived cards")
+
+    # Plan + validate all moves before mutating anything, so a clobber fails clean.
+    plan = []
+    for raw in (fm.get("paths") or []):
+        p = expand(raw)
+        if "/archive/" not in p or not Path(p).is_dir():
+            continue
+        repo, _, _ = p.partition("/archive/")
+        leaf = Path(p).name
+        m = re.match(r"^\d{4}-\d{2}-(.+)$", leaf)
+        bare = m.group(1) if m else leaf
+        dst = f"{repo}/active/{bare}"
+        if Path(dst).exists():
+            die(f"{dst} already exists — reinstate would clobber it")
+        plan.append((raw, p, repo, dst, bare))
+
+    text = set_fm_field(text, "status", "in-progress")
+    text = set_fm_field(text, "archivedAt", None)
+    Path(card).write_text(text)
+
+    moved = []
+    for raw, p, repo, dst, bare in plan:
+        n_tx = _move_card_folder(card, p, raw, repo, dst, f"Reinstate: {bare}")
+        moved.append({"from": p, "to": dst, "transcripts": n_tx})
+
+    result = {"ok": True, "status": "in-progress", "moved": moved}
+    lines = [f"{Path(card).name}: reinstated (status → in-progress, archivedAt cleared)"]
+    for m in moved:
+        n = m["transcripts"]
+        lines.append(f"  restored {m['from']}\n        → {m['to']}"
+                     + (f"  (+{n} transcript(s))" if n else ""))
+    _emit(args, result, "\n".join(lines))
+
+
+def cmd_delete(args):
+    """Permanently delete an ARCHIVED card and its archived folder(s) (guarded). Only
+    callable on `archived` cards; `--confirm <slug>` must equal the card's filename
+    stem (engine half of the board's type-to-confirm). Removes each archive/ folder
+    (git rm + commit) and its relocated transcripts, then the card note. R14 Pattern B:
+    never deletes a folder still referenced by a live card."""
+    card = args.card
+    if not Path(card).is_file():
+        die(f"{card}: no such card")
+    if not card_under_cards_dirs(card):
+        die(f"{card}: not inside a configured Cards/ folder")
+    fm, _ = read_card(card)
+    status = str(fm.get("status") or "").strip().lower()
+    if status != "archived":
+        die(f"{Path(card).name}: not archived (status={status or '?'}) — "
+            "delete only applies to archived cards (reinstate first to keep it)")
+    slug = Path(card).stem
+    if args.confirm != slug:
+        die(f"--confirm must equal the card slug {slug!r} to delete (got {args.confirm!r})")
+
+    live = _live_folder_refs(card)
+    deleted, skipped = [], []
+    for raw in (fm.get("paths") or []):
+        p = expand(raw)
+        if "/archive/" not in p or not Path(p).is_dir():
+            continue
+        if p in live:
+            skipped.append(p)
+            continue
+        repo, _, _ = p.partition("/archive/")
+        leaf = Path(p).name
+        rel = p[len(repo) + 1:]
+        r = subprocess.run(["git", "-C", repo, "rm", "-r", "-q", rel])
+        if r.returncode != 0:  # not tracked — plain rm then stage the removal
+            subprocess.run(["rm", "-rf", p], check=True)
+            subprocess.run(["git", "-C", repo, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", repo, "commit", "-q", "-m", f"Delete: {leaf}"], check=True)
+        proj = PROJECTS / encode_cwd(p)
+        if proj.is_dir():
+            subprocess.run(["rm", "-rf", str(proj)], check=True)
+        deleted.append(p)
+
+    Path(card).unlink()  # remove the card note from the vault
+
+    result = {"ok": True, "deleted": deleted, "skipped": skipped, "card": str(Path(card).resolve())}
+    lines = [f"{Path(card).name}: DELETED"]
+    for d in deleted:
+        lines.append(f"  removed folder {d}")
+    for s in skipped:
+        lines.append(f"  SKIP (shared with a live card): {s}")
+    _emit(args, result, "\n".join(lines))
 
 
 # ── deploy ────────────────────────────────────────────────────────────────────
@@ -914,6 +1142,7 @@ def card_to_dict(path, source):
         "area": area_of(tags),
         "source": source,
         "lastActive": last_active(fm),
+        "archivedAt": unquote(fm.get("archivedAt") or ""),
     }
 
 
@@ -1209,6 +1438,26 @@ def main():
                         help="file folders of cards marked archived (R9; dry-run by default)")
     pr.add_argument("--apply", action="store_true", help="perform the moves (default: dry run)")
     pr.set_defaults(func=cmd_reconcile)
+
+    pa = sub.add_parser("archive",
+                        help="archive a card now: status→archived, stamp archivedAt, file its folder")
+    pa.add_argument("card")
+    pa.add_argument("--json", action="store_true", help="emit machine-readable JSON (for the board)")
+    pa.set_defaults(func=cmd_archive)
+
+    pri = sub.add_parser("reinstate",
+                         help="un-archive a card: status→in-progress, clear archivedAt, move folder back")
+    pri.add_argument("card")
+    pri.add_argument("--json", action="store_true", help="emit machine-readable JSON (for the board)")
+    pri.set_defaults(func=cmd_reinstate)
+
+    pdel = sub.add_parser("delete",
+                          help="permanently delete an ARCHIVED card + its archived folder (guarded)")
+    pdel.add_argument("card")
+    pdel.add_argument("--confirm", required=True, metavar="SLUG",
+                      help="must equal the card's filename stem (type-to-confirm guard)")
+    pdel.add_argument("--json", action="store_true", help="emit machine-readable JSON (for the board)")
+    pdel.set_defaults(func=cmd_delete)
 
     pd = sub.add_parser("deploy",
                         help="push the canonical surfaces (board/template/buttons/hook/engine) "
