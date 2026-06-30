@@ -1024,3 +1024,126 @@ def test_new_domain_selects_active_root(cc, tmp_path, monkeypatch):
     fm, _ = cc.read_card(str(tmp_path / "p" / "Cards" / "pcard.md"))
     assert fm["paths"][0] == str(p_active / "pcard")
     assert (p_active / "pcard").is_dir()
+
+
+# ── set: the metadata writer ────────────────────────────────────────────────────
+def _set_ns(card, **kw):
+    base = dict(card=card, area=None, add_area=None, program=None,
+                raised_at=None, add_tag=None, remove_tag=None)
+    base.update(kw)
+    return NS(**base)
+
+
+def test_set_tags_block_form_preserved(cc):
+    block = "---\ntype: project\ntags:\n  - area/work-ops\n  - type/reference\n---\nbody\n"
+    out = cc.set_tags_in_text(block, ["area/v7", "type/reference", "kind/geo"])
+    assert "tags:\n  - area/v7\n  - type/reference\n  - kind/geo\n" in out
+    assert out.startswith("---\ntype: project\n")
+
+
+def test_set_tags_inline_form_preserved(cc):
+    inline = "---\ntitle: X\ntags: [area/work-ops]\n---\nbody\n"
+    out = cc.set_tags_in_text(inline, ["area/work-ops", "kind/foo"])
+    assert "tags: [area/work-ops, kind/foo]\n" in out
+
+
+def test_set_tags_inserts_when_absent(cc):
+    none = "---\ntitle: X\nstatus: backlog\n---\nbody\n"
+    out = cc.set_tags_in_text(none, ["area/work-ops"])
+    assert "tags: [area/work-ops]\n" in out
+    assert out.count("---") == 2
+
+
+def test_cmd_set_area_replaces_and_adds_program(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "c", extra_body="")
+    # seed an area tag to be replaced
+    card.write_text(card.read_text().replace("status: in-progress",
+                                             "status: in-progress\ntags: [area/docs]"))
+    cc.cmd_set(_set_ns(str(card), area="area/v7", program="managing-ai-activities"))
+    fm, _ = cc.read_card(str(card))
+    assert "area/v7" in fm["tags"] and "area/docs" not in fm["tags"]
+    assert cc.unwrap_wikilink(fm["program"]) == "managing-ai-activities"
+
+
+def test_cmd_set_roundtrip_add_then_remove_is_identical(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "c")
+    card.write_text(card.read_text().replace("status: in-progress",
+                                             "status: in-progress\ntags: [area/work-ops]"))
+    before = card.read_text()
+    cc.cmd_set(_set_ns(str(card), add_tag=["kind/test"]))
+    cc.cmd_set(_set_ns(str(card), remove_tag=["kind/test"]))
+    assert card.read_text() == before
+
+
+def test_cmd_set_refuses_outside_cards_dir(cc, tmp_path, monkeypatch):
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": tmp_path / "Cards"})
+    stray = tmp_path / "stray.md"
+    stray.write_text("---\ntitle: X\n---\n")
+    with pytest.raises(SystemExit):
+        cc.cmd_set(_set_ns(str(stray), add_tag=["kind/x"]))
+
+
+# ── lint: drift detection ───────────────────────────────────────────────────────
+def _lint_ns(card=None, **kw):
+    return NS(card=card, json=True, **kw)
+
+
+def _findings(cc, tmp_path, capsys):
+    cc.cmd_lint(_lint_ns())
+    return {(f["code"], f["card"]) for f in json.loads(capsys.readouterr().out)}
+
+
+def test_lint_flags_no_area_and_clean_card(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    bad = make_card(cards, "noarea")  # no tags → NO-AREA
+    good = make_card(cards, "ok")
+    good.write_text(good.read_text().replace("status: in-progress",
+                                             "status: in-progress\ntags: [area/work-ops]"))
+    found = _findings(cc, tmp_path, capsys)
+    assert ("NO-AREA", "noarea.md") in found
+    assert ("NO-AREA", "ok.md") not in found
+
+
+def test_lint_bad_status_and_link_in_prose(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    c = make_card(cards, "c", status="wip")
+    c.write_text(c.read_text().replace("status: wip",
+                 'status: wip\ntags: [area/work-ops]\nlatest: "see [[other]]"'))
+    found = _findings(cc, tmp_path, capsys)
+    assert ("BAD-STATUS", "c.md") in found
+    assert ("LINK-IN-PROSE", "c.md") in found
+
+
+def test_lint_dangling_link_and_basename_collision(cc, tmp_path, monkeypatch, capsys):
+    vault = tmp_path / "vault"
+    cards = vault / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    # a real program note so a *resolvable* link doesn't dangle
+    (vault / "Programs").mkdir(parents=True)
+    (vault / "Programs" / "real-prog.md").write_text("# real\n")
+    c = make_card(cards, "c")
+    c.write_text(c.read_text().replace("status: in-progress",
+                 'status: in-progress\ntags: [area/work-ops]\nprogram: "[[ghost-prog]]"'))
+    # basename collision: a note sharing the card's stem elsewhere in the vault
+    (vault / "dup.md").write_text("# dup\n")
+    make_card(cards, "dup")
+    found = _findings(cc, tmp_path, capsys)
+    assert ("DANGLING-LINK", "c.md") in found
+    assert any(code == "BASENAME-COLLISION" for code, _ in found)
+
+
+def test_lint_standing_language_is_heuristic(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    c = make_card(cards, "c", title="The ongoing thing")
+    c.write_text(c.read_text().replace("status: in-progress",
+                                       "status: in-progress\ntags: [area/work-ops]"))
+    cc.cmd_lint(_lint_ns())
+    f = [x for x in json.loads(capsys.readouterr().out) if x["code"] == "STANDING-LANGUAGE"]
+    assert f and f[0]["severity"] == "heuristic"

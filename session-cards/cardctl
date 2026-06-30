@@ -1378,6 +1378,257 @@ end tell
         print(f"focused VS Code window for {title!r}")
 
 
+# ── set: the validated metadata writer (area/program/raised-at/tags) ────────────
+# Backs the /card-model skill's "apply-on-confirm" fixes. Scope is deliberately the
+# additive/corrective link-properties + facet tags — reversible metadata. status stays
+# with set-status; rename/move of *notes* stays out (that's an Obsidian-API job). Adding
+# a link-property *value* to a card is a create/append/edit, so a filesystem write is
+# correct here (the Obsidian-API requirement is only for renaming/moving notes).
+
+def _format_tag_block(tags, inline):
+    if inline:
+        return "tags: [" + ", ".join(tags) + "]\n"
+    return "tags:\n" + "".join(f"  - {t}\n" for t in tags)
+
+
+def set_tags_in_text(text, tags):
+    """Replace the frontmatter `tags:` with `tags` (existing inline-vs-block form
+    preserved; inserts an inline `tags:` before the closing fence if none exists).
+    Surgical like {@link set_fm_field} — only the tags lines change."""
+    lines = text.splitlines(keepends=True)
+    out, in_fm, seen_open, done, i = [], False, False, False, 0
+    while i < len(lines):
+        ln = lines[i]
+        if ln.strip() == "---":
+            if not seen_open:
+                seen_open = in_fm = True
+                out.append(ln); i += 1; continue
+            if in_fm:
+                if not done:
+                    out.append(_format_tag_block(tags, inline=True)); done = True
+                in_fm = False
+                out.append(ln); i += 1; continue
+        if in_fm and ln.startswith("tags:"):
+            inline = bool(ln.partition(":")[2].strip())  # `tags: [..]` vs block
+            if not done:
+                out.append(_format_tag_block(tags, inline)); done = True
+            i += 1
+            if not inline:  # drop the trailing block-list items
+                while i < len(lines) and lines[i][:1] in (" ", "\t") \
+                        and lines[i].lstrip().startswith("- "):
+                    i += 1
+            continue
+        out.append(ln); i += 1
+    return "".join(out)
+
+
+def cmd_set(args):
+    """Write a card's metadata: area/* facet, additional facet tags, and the
+    `program:`/`raised-at:` home/provenance link-properties. The single validated
+    writer behind the skill's apply-on-confirm fixes (R10 — surfaces don't edit files).
+    Refuses anything outside a configured Cards/ folder; never touches status."""
+    if not Path(args.card).is_file():
+        die(f"{args.card}: no such card")
+    if not card_under_cards_dirs(args.card):
+        die(f"{args.card}: not inside a configured Cards/ folder")
+    fm, text = read_card(args.card)
+    changes = []
+
+    tags = [t.strip() for t in (fm.get("tags") if isinstance(fm.get("tags"), list) else [])]
+    new_tags = list(tags)
+    if args.area:
+        a = args.area if args.area.startswith("area/") else f"area/{args.area}"
+        new_tags = [t for t in new_tags if not t.startswith("area/")] + [a]
+        changes.append(("area", a))
+    for raw in (args.add_area or []):
+        a = raw if raw.startswith("area/") else f"area/{raw}"
+        if a not in new_tags:
+            new_tags.append(a); changes.append(("+tag", a))
+    for t in (args.add_tag or []):
+        if t not in new_tags:
+            new_tags.append(t); changes.append(("+tag", t))
+    for t in (args.remove_tag or []):
+        if t in new_tags:
+            new_tags.remove(t); changes.append(("-tag", t))
+    if new_tags != tags:
+        text = set_tags_in_text(text, new_tags)
+
+    if args.program is not None:
+        text = set_fm_field(text, "program", f'"[[{unwrap_wikilink(args.program)}]]"')
+        changes.append(("program", unwrap_wikilink(args.program)))
+    if args.raised_at is not None:
+        text = set_fm_field(text, "raised-at", f'"[[{unwrap_wikilink(args.raised_at)}]]"')
+        changes.append(("raised-at", unwrap_wikilink(args.raised_at)))
+
+    if not changes:
+        print(f"{Path(args.card).name}: no changes"); return
+    Path(args.card).write_text(text)
+    for k, v in changes:
+        print(f"{Path(args.card).name}: {k} = {v}")
+
+
+# ── lint: deterministic drift detection over the card store ──────────────────────
+# Emits FACTS only (the skill applies judgement). Each finding: card, code, severity
+# (error|warn|heuristic), detail, optional fix command, auto_safe hint. Reusable by the
+# board / CI, not just the /card-model skill.
+
+LINT_SEVERITY_RANK = {"error": 0, "warn": 1, "heuristic": 2}
+VAULT_IGNORE_DIRS = {".obsidian", ".trash", ".git", "node_modules"}
+# Scaffolding/tooling files that live in many folders by design and are never wikilink
+# targets — excluded from the basename-collision check so they don't drown real clashes.
+COLLISION_IGNORE_STEMS = {"README", "CLAUDE", "AGENTS", "index"}
+
+
+def _vault_root_for_card(card_path):
+    """The vault root (Cards/'s parent) whose Cards/ folder holds this card, else None."""
+    cp = expand(card_path)
+    for cd in CARDS_DIRS.values():
+        if cp.startswith(expand(cd) + os.sep):
+            return Path(cd).parent
+    return None
+
+
+def _source_for_card(card_path):
+    """The Domain key (work/personal) whose Cards/ folder holds this card, else ''."""
+    cp = expand(card_path)
+    for source, cd in CARDS_DIRS.items():
+        if cp.startswith(expand(cd) + os.sep):
+            return source
+    return ""
+
+
+def _vault_notes(vault_root):
+    """{note-stem: [paths]} for every .md under `vault_root` (skipping dotfolders /
+    .trash / node_modules). Backs link-resolution + basename-collision checks."""
+    idx = {}
+    root = Path(vault_root)
+    for p in root.rglob("*.md"):
+        parts = p.relative_to(root).parts[:-1]
+        if any(d in VAULT_IGNORE_DIRS or d.startswith(".") for d in parts):
+            continue
+        idx.setdefault(p.stem, []).append(p)
+    return idx
+
+
+def _finding(card, code, severity, detail, source="", fix=None, auto_safe=False):
+    return {"card": card, "source": source, "code": code, "severity": severity,
+            "detail": detail, "fix": fix, "auto_safe": auto_safe}
+
+
+def cmd_lint(args):
+    """Check cards for model drift; print a grouped report or `--json` findings."""
+    if args.card:
+        if not Path(args.card).is_file():
+            die(f"{args.card}: no such card")
+        card_files = [Path(args.card)]
+    else:
+        card_files = _all_card_files()
+
+    cards = [(c, *read_card(c)) for c in card_files]  # (path, fm, text)
+
+    note_idx = {}
+    def notes_for(card_path):
+        vr = _vault_root_for_card(card_path)
+        if vr is None:
+            return {}
+        if str(vr) not in note_idx:
+            note_idx[str(vr)] = _vault_notes(vr)
+        return note_idx[str(vr)]
+
+    # which areas have at least one card carrying a program (for EMPTY-PROGRAM)
+    area_has_program = {}
+    for c, fm, _ in cards:
+        ar = area_of(fm.get("tags") if isinstance(fm.get("tags"), list) else [])
+        if ar and unwrap_wikilink(fm.get("program") or "").strip():
+            area_has_program[ar] = True
+
+    findings = []
+    for c, fm, text in cards:
+        name = c.name
+        src = _source_for_card(c)
+        tags = fm.get("tags") if isinstance(fm.get("tags"), list) else []
+        ar = area_of(tags)
+        idx = notes_for(c)
+
+        if not ar:
+            findings.append(_finding(name, "NO-AREA", "error", "no area/* facet tag", source=src))
+
+        if not unwrap_wikilink(fm.get("program") or "").strip() and ar and area_has_program.get(ar):
+            findings.append(_finding(name, "EMPTY-PROGRAM", "warn",
+                f"no program: while siblings in area/{ar} have one", source=src))
+
+        for field in ("program", "raised-at"):
+            raw = fm.get(field)
+            if raw:
+                target = unwrap_wikilink(raw).strip()
+                if target and idx and target not in idx:
+                    findings.append(_finding(name, "DANGLING-LINK", "error",
+                        f"{field}: [[{target}]] resolves to no note in the vault", source=src))
+
+        for field in ("summary", "latest", "title"):
+            v = fm.get(field)
+            if isinstance(v, str) and re.search(r"\[\[.+?\]\]", v):
+                findings.append(_finding(name, "LINK-IN-PROSE", "warn",
+                    f"wikilink buried in `{field}:` — not a rename-safe link-property", source=src))
+
+        st = unquote(fm.get("status") or "").strip()
+        if st and st not in CARD_STATUSES:
+            findings.append(_finding(name, "BAD-STATUS", "error",
+                f"status {st!r} not in controlled vocab ({', '.join(CARD_STATUSES)})",
+                source=src, fix=f"cardctl set-status {c} <{'|'.join(CARD_STATUSES)}>"))
+
+        if unquote(fm.get("type") or "").strip() == "plan" and not fm.get("planId"):
+            findings.append(_finding(name, "MISSING-PLANID", "warn", "plan card without a planId", source=src))
+
+        for p in (fm.get("paths") or []):
+            if isinstance(p, str) and p.strip() and not Path(expand(p)).exists():
+                findings.append(_finding(name, "STALE-PATH", "warn",
+                    f"paths entry does not exist on disk: {p}", source=src))
+
+        hay = " ".join(str(fm.get(k) or "") for k in ("title", "summary"))
+        if re.search(r"\b(ongoing|standing|recurring)\b", hay, re.I):
+            findings.append(_finding(name, "STANDING-LANGUAGE", "heuristic",
+                "uses standing language — candidate for a Program/Forum note, not a card", source=src))
+
+    # BASENAME-COLLISION — vault-wide, reported once per colliding stem per vault
+    vr_source = {str(Path(expand(cd)).parent): source for source, cd in CARDS_DIRS.items()}
+    scanned = {str(_vault_root_for_card(c)) for c, _, _ in cards if _vault_root_for_card(c)}
+    for vr in scanned:
+        for stem, paths in sorted(_vault_notes(vr).items()):
+            if len(paths) > 1 and stem not in COLLISION_IGNORE_STEMS:
+                rels = ", ".join(str(p.relative_to(vr)) for p in paths)
+                findings.append(_finding("(vault)", "BASENAME-COLLISION", "error",
+                    f"basename '{stem}' shared by {len(paths)} notes: {rels}",
+                    source=vr_source.get(vr, "")))
+
+    findings.sort(key=lambda f: (LINT_SEVERITY_RANK.get(f["severity"], 9),
+                                 f["source"], f["code"], f["card"]))
+
+    if args.json:
+        print(json.dumps(findings, ensure_ascii=False))
+        return
+    if not findings:
+        print(f"cardctl lint: {len(cards)} card(s), no drift ✓")
+        return
+    cur = None
+    for f in findings:
+        if f["severity"] != cur:
+            cur = f["severity"]
+            print(f"\n{cur.upper()}")
+        if f["card"] == "(vault)":
+            loc = f"[{f['source']} vault]" if f.get("source") else "[vault]"
+        else:
+            loc = f"{f['card']} ({f['source']})" if f.get("source") else f["card"]
+        print(f"  [{f['code']}] {loc}: {f['detail']}")
+        if f["fix"]:
+            print(f"      fix: {f['fix']}")
+    counts = {}
+    for f in findings:
+        counts[f["severity"]] = counts.get(f["severity"], 0) + 1
+    summ = ", ".join(f"{counts[s]} {s}" for s in ("error", "warn", "heuristic") if s in counts)
+    print(f"\n{len(findings)} finding(s) across {len(cards)} card(s): {summ}")
+
+
 def main():
     ap = argparse.ArgumentParser(prog="cardctl", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1433,6 +1684,23 @@ def main():
     ps.add_argument("card")
     ps.add_argument("status", help=f"one of: {', '.join(CARD_STATUSES)}")
     ps.set_defaults(func=cmd_set_status)
+
+    pst = sub.add_parser("set", help="set a card's metadata (area/program/raised-at/tags) — the "
+                                     "validated writer behind the /card-model apply-on-confirm fixes")
+    pst.add_argument("card")
+    pst.add_argument("--area", help="set the area/* facet (replaces any existing area/* tag)")
+    pst.add_argument("--add-area", action="append", help="add an additional area/* tag (repeatable)")
+    pst.add_argument("--program", help='set program: "[[name]]" home link (repoints if present)')
+    pst.add_argument("--raised-at", dest="raised_at", help='set raised-at: "[[forum]]" provenance link')
+    pst.add_argument("--add-tag", action="append", help="add a facet tag verbatim, e.g. kind/geospatial (repeatable)")
+    pst.add_argument("--remove-tag", action="append", help="remove a facet tag (repeatable)")
+    pst.set_defaults(func=cmd_set)
+
+    plt = sub.add_parser("lint", help="check cards for model drift (dangling links, no area, "
+                                      "basename collisions, links-in-prose, bad status, ...)")
+    plt.add_argument("card", nargs="?", help="lint a single card (default: every card)")
+    plt.add_argument("--json", action="store_true", help="emit findings as a JSON array")
+    plt.set_defaults(func=cmd_lint)
 
     pr = sub.add_parser("reconcile",
                         help="file folders of cards marked archived (R9; dry-run by default)")

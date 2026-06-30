@@ -19,6 +19,8 @@ cardctl link   <card.md> --current   # pin the running session + log it under ##
 cardctl link   <card.md> --session ID # pin a specific session id (e.g. one that ran elsewhere)
 cardctl new    <slug> --title …   # scaffold a card in the Domain vault's Cards/ folder
 cardctl set-status <card.md> <s>  # set lifecycle status (single writer of the field; surfaces delegate here)
+cardctl set <card.md> [--area … --program … --raised-at … --add-tag … --remove-tag …]  # write metadata (the /card-model apply-on-confirm writer)
+cardctl lint [card.md] [--json]   # check cards for model drift (/card-model linter); --json = findings array
 cardctl list [--json]             # list all cards across the Cards/ folders; --json = the board's read interface
 cardctl focus  <card.md>          # bring the card's VS Code window to the front (Hammerspoon focus-by-id; AppleScript fallback)
 cardctl windows [--json]          # list open VS Code windows mapped to cards (via Hammerspoon); --json = board read interface
@@ -42,6 +44,46 @@ its task repo (`git mv` + an `Archive:` commit) and updates the card's path. Cro
 the vault, folder in the task repo. **Dry-run by default** — add `--apply` to perform the moves.
 Skips a folder still referenced by a *live* (non-archived) card (R14 Pattern B). Run it at session
 start (or on demand) to let board status drive the filesystem.
+
+## `lint` — model-drift linter (`/card-model`)
+
+The integrity check the no-schema markdown card store needs. Scans every card (or one, if you pass
+a path) and emits **facts** — it never edits anything. The `/card-model` skill consumes
+`cardctl lint --json` and applies judgement; the board / CI can call it too.
+
+```bash
+cardctl lint           # grouped human report (error → warn → heuristic) + a summary line
+cardctl lint --json    # [{card, code, severity, detail, fix, auto_safe}, …]
+cardctl lint <card.md> # just that card (basename-collision is still scanned vault-wide)
+```
+
+Checks: `NO-AREA` (no `area/*` tag), `EMPTY-PROGRAM` (no `program:` while same-area siblings have
+one), `DANGLING-LINK` (`program:`/`raised-at:` resolves to no vault note), `BASENAME-COLLISION` (a
+note basename used by ≥2 notes vault-wide — breaks `shortest` link resolution; scaffolding stems
+README/CLAUDE/AGENTS/index are exempt), `LINK-IN-PROSE` (a `[[…]]` buried in `summary:`/`latest:`/
+`title:` instead of a link-property), `BAD-STATUS` (status outside the controlled vocabulary),
+`MISSING-PLANID` (a `plan`-type card with no `planId`), `STALE-PATH` (a `paths:` entry that no
+longer exists on disk), and the `STANDING-LANGUAGE` **heuristic** (ongoing/standing/recurring in
+title/summary — a *candidate* for a Program/Forum note, the skill + you make the call).
+
+## `set` — metadata writer (the apply-on-confirm fixes)
+
+The validated writer behind `/card-model`'s low-risk fixes. Scope is deliberately reversible
+metadata — the `area/*` facet, extra facet tags, and the `program:`/`raised-at:` link-properties.
+It refuses any file outside a configured `Cards/` folder and never touches `status` (that stays
+with `set-status`) or renames notes (an Obsidian-API job). Adding a link-property *value* to a card
+is a create/edit, so a filesystem write is correct here.
+
+```bash
+cardctl set <card.md> --area area/v7                 # replace the area/* facet
+cardctl set <card.md> --program managing-ai-activities  # set/repoint program: "[[…]]" home link
+cardctl set <card.md> --raised-at e-and-a            # set raised-at: "[[…]]" provenance link
+cardctl set <card.md> --add-tag kind/geospatial      # add a facet tag (repeatable)
+cardctl set <card.md> --remove-tag kind/old          # remove a facet tag (repeatable)
+```
+
+Existing inline (`tags: [a, b]`) vs block (`tags:\n  - a`) form is preserved; edits are surgical
+so the vault git diff stays minimal.
 
 ## `list` — the board's read interface
 
