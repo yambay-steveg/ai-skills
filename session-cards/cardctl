@@ -1422,6 +1422,37 @@ def set_tags_in_text(text, tags):
     return "".join(out)
 
 
+def set_paths_in_text(text, paths):
+    """Replace the frontmatter `paths:` block list with `paths` (always block form —
+    one `  - <abs>` line each). Surgical like {@link set_tags_in_text}: only the paths
+    lines change. Inserts a `paths:` block before the closing fence if none exists."""
+    lines = text.splitlines(keepends=True)
+    out, in_fm, seen_open, done, i = [], False, False, False, 0
+    block = "paths:\n" + "".join(f"  - {p}\n" for p in paths)
+    while i < len(lines):
+        ln = lines[i]
+        if ln.strip() == "---":
+            if not seen_open:
+                seen_open = in_fm = True
+                out.append(ln); i += 1; continue
+            if in_fm:
+                if not done:
+                    out.append(block); done = True
+                in_fm = False
+                out.append(ln); i += 1; continue
+        if in_fm and ln.startswith("paths:"):
+            if not done:
+                out.append(block); done = True
+            i += 1
+            # drop the existing block-list items (`  - ...`) and any empty placeholder
+            while i < len(lines) and lines[i][:1] in (" ", "\t") \
+                    and lines[i].lstrip().startswith("-"):
+                i += 1
+            continue
+        out.append(ln); i += 1
+    return "".join(out)
+
+
 def cmd_set(args):
     """Write a card's metadata: area/* facet, additional facet tags, and the
     `program:`/`raised-at:` home/provenance link-properties. The single validated
@@ -1459,6 +1490,32 @@ def cmd_set(args):
     if args.raised_at is not None:
         text = set_fm_field(text, "raised-at", f'"[[{unwrap_wikilink(args.raised_at)}]]"')
         changes.append(("raised-at", unwrap_wikilink(args.raised_at)))
+
+    # paths axis (#14): absolute folders, not wikilinks — a filesystem write is correct.
+    # Appends go after paths[0] (the primary/cwd folder is preserved); a missing folder
+    # warns but doesn't fail (mirrors `cmd_new`); refuse to strip the last remaining path.
+    paths = [str(p).strip() for p in (fm.get("paths") if isinstance(fm.get("paths"), list) else [])]
+    new_paths = list(paths)
+    for raw in (args.add_path or []):
+        p = expand(raw)
+        if p in new_paths:
+            continue  # idempotent
+        new_paths.append(p)
+        changes.append(("+path", p))
+        if not Path(p).is_dir():
+            print(f"cardctl: warning — path does not exist yet: {p}", file=sys.stderr)
+    for raw in (args.remove_path or []):
+        p = expand(raw)
+        target = p if p in new_paths else (raw if raw in new_paths else None)
+        if target is None:
+            print(f"cardctl: warning — path not on card, skipping: {raw}", file=sys.stderr)
+            continue
+        new_paths.remove(target)
+        changes.append(("-path", target))
+    if paths and not new_paths:
+        die("refusing to remove the last path (a card with no paths can't launch)")
+    if new_paths != paths:
+        text = set_paths_in_text(text, new_paths)
 
     if not changes:
         print(f"{Path(args.card).name}: no changes"); return
@@ -1694,6 +1751,10 @@ def main():
     pst.add_argument("--raised-at", dest="raised_at", help='set raised-at: "[[forum]]" provenance link')
     pst.add_argument("--add-tag", action="append", help="add a facet tag verbatim, e.g. kind/geospatial (repeatable)")
     pst.add_argument("--remove-tag", action="append", help="remove a facet tag (repeatable)")
+    pst.add_argument("--add-path", action="append", metavar="FOLDER",
+                     help="append a folder to the card's paths (idempotent; warns if it doesn't exist; repeatable)")
+    pst.add_argument("--remove-path", action="append", metavar="FOLDER",
+                     help="remove a folder from the card's paths (repeatable; refuses to strip the last one)")
     pst.set_defaults(func=cmd_set)
 
     plt = sub.add_parser("lint", help="check cards for model drift (dangling links, no area, "
