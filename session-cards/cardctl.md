@@ -19,7 +19,7 @@ cardctl link   <card.md> --current   # pin the running session + log it under ##
 cardctl link   <card.md> --session ID # pin a specific session id (e.g. one that ran elsewhere)
 cardctl new    <slug> --title …   # scaffold a card in the Domain vault's Cards/ folder
 cardctl set-status <card.md> <s>  # set lifecycle status (single writer of the field; surfaces delegate here)
-cardctl set <card.md> [--area … --program … --raised-at … --add-tag … --remove-tag …]  # write metadata (the /card-model apply-on-confirm writer)
+cardctl set <card.md> [--area … --program … --raised-at … --customer … --add-tag … --remove-tag … --add-path …]  # write metadata (the /card-model apply-on-confirm writer)
 cardctl lint [card.md] [--json]   # check cards for model drift (/card-model linter); --json = findings array
 cardctl list [--json]             # list all cards across the Cards/ folders; --json = the board's read interface
 cardctl focus  <card.md>          # bring the card's VS Code window to the front (Hammerspoon focus-by-id; AppleScript fallback)
@@ -58,7 +58,7 @@ cardctl lint <card.md> # just that card (basename-collision is still scanned vau
 ```
 
 Checks: `NO-AREA` (no `area/*` tag), `EMPTY-PROGRAM` (no `program:` while same-area siblings have
-one), `DANGLING-LINK` (`program:`/`raised-at:` resolves to no vault note), `BASENAME-COLLISION` (a
+one), `DANGLING-LINK` (`program:`/`raised-at:`/`customer:` resolves to no vault note), `BASENAME-COLLISION` (a
 note basename used by ≥2 notes vault-wide — breaks `shortest` link resolution; scaffolding stems
 README/CLAUDE/AGENTS/index are exempt), `LINK-IN-PROSE` (a `[[…]]` buried in `summary:`/`latest:`/
 `title:` instead of a link-property), `BAD-STATUS` (status outside the controlled vocabulary),
@@ -78,6 +78,7 @@ is a create/edit, so a filesystem write is correct here.
 cardctl set <card.md> --area area/v7                 # replace the area/* facet
 cardctl set <card.md> --program managing-ai-activities  # set/repoint program: "[[…]]" home link
 cardctl set <card.md> --raised-at e-and-a            # set raised-at: "[[…]]" provenance link
+cardctl set <card.md> --customer sce                 # set customer: "[[…]]" stakeholder link (Customers/<slug>)
 cardctl set <card.md> --add-tag kind/geospatial      # add a facet tag (repeatable)
 cardctl set <card.md> --remove-tag kind/old          # remove a facet tag (repeatable)
 cardctl set <card.md> --add-path ~/Source/work/…     # append a folder to paths (idempotent; repeatable)
@@ -92,7 +93,8 @@ so the vault git diff stays minimal.
 `cardctl list --json` prints a JSON array (one object per card across every `Cards/` folder) shaped to
 the board's card model, so the board maps it directly. Per card: `filePath` (absolute), `fileName`
 (basename, no `.md`), `title`, `status`, `summary`, `latest`, `tags` (array), `program` and `project`
-(wikilink-unwrapped — `[[Work Ops|Ops]]` → `Work Ops`), `sessionId`, `paths` (array), `area` (the first
+(wikilink-unwrapped — `[[Work Ops|Ops]]` → `Work Ops`), `customer` (**array** of slugs — a card can
+serve several; scalar-or-list in frontmatter), `sessionId`, `paths` (array), `area` (the first
 `area/<slug>` tag's slug, e.g. `tools`), `source` (the vault domain key, `work`/`personal`), and
 `lastActive` (ISO-8601, timezone-aware — the newest session-transcript mtime across the pinned
 `sessionId`'s transcript **and** every transcript under the card's `paths`, or `null` if the card has
