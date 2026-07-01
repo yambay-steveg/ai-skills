@@ -1029,7 +1029,8 @@ def test_new_domain_selects_active_root(cc, tmp_path, monkeypatch):
 # ── set: the metadata writer ────────────────────────────────────────────────────
 def _set_ns(card, **kw):
     base = dict(card=card, area=None, add_area=None, program=None,
-                raised_at=None, add_tag=None, remove_tag=None)
+                raised_at=None, add_tag=None, remove_tag=None,
+                add_path=None, remove_path=None)
     base.update(kw)
     return NS(**base)
 
@@ -1085,6 +1086,91 @@ def test_cmd_set_refuses_outside_cards_dir(cc, tmp_path, monkeypatch):
     stray.write_text("---\ntitle: X\n---\n")
     with pytest.raises(SystemExit):
         cc.cmd_set(_set_ns(str(stray), add_tag=["kind/x"]))
+
+
+# ── set: paths axis (#14, --add-path / --remove-path) ────────────────────────────
+def test_set_paths_in_text_replaces_block(cc):
+    doc = "---\ntitle: X\npaths:\n  - /a/b\n  - /c/d\n---\nbody\n"
+    out = cc.set_paths_in_text(doc, ["/a/b", "/c/d", "/e/f"])
+    assert "paths:\n  - /a/b\n  - /c/d\n  - /e/f\n" in out
+    assert out.endswith("---\nbody\n")
+
+
+def test_set_paths_in_text_inserts_when_absent(cc):
+    doc = "---\ntitle: X\nstatus: backlog\n---\nbody\n"
+    out = cc.set_paths_in_text(doc, ["/a/b"])
+    assert "paths:\n  - /a/b\n" in out
+    assert out.count("---") == 2
+
+
+def test_cmd_set_add_path_appends_after_primary(cc, tmp_path, monkeypatch):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    prim = (tmp_path / "active" / "x").resolve()
+    extra = (tmp_path / "vault").resolve()
+    prim.mkdir(parents=True)
+    extra.mkdir()
+    card = make_card(cards, "c", paths=[str(prim)])
+    cc.cmd_set(_set_ns(str(card), add_path=[str(extra)]))
+    fm, _ = cc.read_card(str(card))
+    assert fm["paths"] == [str(prim), str(extra)]   # primary preserved, append after
+
+
+def test_cmd_set_add_path_idempotent(cc, tmp_path, monkeypatch):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    prim = (tmp_path / "active" / "x").resolve()
+    prim.mkdir(parents=True)
+    card = make_card(cards, "c", paths=[str(prim)])
+    before = card.read_text()
+    cc.cmd_set(_set_ns(str(card), add_path=[str(prim)]))   # already present
+    assert card.read_text() == before                       # no change
+
+
+def test_cmd_set_add_path_warns_when_missing(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    prim = (tmp_path / "active" / "x").resolve()
+    prim.mkdir(parents=True)
+    card = make_card(cards, "c", paths=[str(prim)])
+    missing = str((tmp_path / "nope").resolve())
+    cc.cmd_set(_set_ns(str(card), add_path=[missing]))
+    fm, _ = cc.read_card(str(card))
+    assert missing in fm["paths"]                            # still added
+    assert "does not exist yet" in capsys.readouterr().err   # but warned
+
+
+def test_cmd_set_remove_path(cc, tmp_path, monkeypatch):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    prim = (tmp_path / "active" / "x").resolve()
+    extra = (tmp_path / "vault").resolve()
+    card = make_card(cards, "c", paths=[str(prim), str(extra)])
+    cc.cmd_set(_set_ns(str(card), remove_path=[str(extra)]))
+    fm, _ = cc.read_card(str(card))
+    assert fm["paths"] == [str(prim)]
+
+
+def test_cmd_set_remove_last_path_refused(cc, tmp_path, monkeypatch):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    prim = (tmp_path / "active" / "x").resolve()
+    card = make_card(cards, "c", paths=[str(prim)])
+    before = card.read_text()
+    with pytest.raises(SystemExit):
+        cc.cmd_set(_set_ns(str(card), remove_path=[str(prim)]))
+    assert card.read_text() == before                        # untouched
+
+
+def test_cmd_set_remove_path_not_on_card_warns(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    prim = (tmp_path / "active" / "x").resolve()
+    card = make_card(cards, "c", paths=[str(prim)])
+    before = card.read_text()
+    cc.cmd_set(_set_ns(str(card), remove_path=[str((tmp_path / "other").resolve())]))
+    assert card.read_text() == before                        # no change
+    assert "not on card" in capsys.readouterr().err
 
 
 # ── lint: drift detection ───────────────────────────────────────────────────────

@@ -80,6 +80,8 @@ cardctl set <card.md> --program managing-ai-activities  # set/repoint program: "
 cardctl set <card.md> --raised-at e-and-a            # set raised-at: "[[…]]" provenance link
 cardctl set <card.md> --add-tag kind/geospatial      # add a facet tag (repeatable)
 cardctl set <card.md> --remove-tag kind/old          # remove a facet tag (repeatable)
+cardctl set <card.md> --add-path ~/Source/work/…     # append a folder to paths (idempotent; repeatable)
+cardctl set <card.md> --remove-path ~/Source/work/…  # remove a folder from paths (repeatable)
 ```
 
 Existing inline (`tags: [a, b]`) vs block (`tags:\n  - a`) form is preserved; edits are surgical
