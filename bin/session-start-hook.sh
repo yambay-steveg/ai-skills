@@ -21,7 +21,7 @@ if [ -n "$cwd" ]; then
 Session-card context — this working folder maps to a card (shown below). Open with where it stands + what's next.
 ${card}
 
-Card conventions (don't hand-invent fields): on wrap, record this session — run \`cardctl link <card-path-above> --current\`, then add a one-line note under the card's \`## Sessions\` heading (what this session did). Refresh \`latest\` (current state / next step); set \`status\` to one of backlog | in-progress | on-hold | done | archived (\`done\` clears the board but keeps the folder; \`archived\` files it). \`sessionId\` = current pin; \`## Sessions\` (body) = the readable history. Full how-to: ai-skills/session-cards/cardctl.md and the work vault Procedures/session-card-system.md note."
+Card conventions — **cardctl is the single validated writer; do NOT hand-edit card frontmatter.** Change fields via cardctl: \`set-status\` (status) and \`set\` (area/program/raised-at/tags). On wrap: \`cardctl link <card-path-above> --current\`, then add a one-line note under \`## Sessions\` (what this session did). Only \`latest\` and the \`## Sessions\` note lack a cardctl writer for now — edit those two minimally by hand; everything else goes through cardctl. **Rename notes/cards only via the Obsidian API** (\`obsidian rename …\`), never shell/git, or links break. Status vocab: backlog | in-progress | on-hold | done | archived (\`done\` clears the board, keeps the folder; \`archived\` files it) — never set \`done\`/\`archived\` without Steve's say-so. Full model + rules: work vault Procedures/session-card-system.md; commands: ai-skills/session-cards/cardctl.md."
   fi
 fi
 
