@@ -1030,7 +1030,7 @@ def test_new_domain_selects_active_root(cc, tmp_path, monkeypatch):
 def _set_ns(card, **kw):
     base = dict(card=card, area=None, add_area=None, program=None,
                 raised_at=None, add_tag=None, remove_tag=None,
-                add_path=None, remove_path=None)
+                add_path=None, remove_path=None, customer=None)
     base.update(kw)
     return NS(**base)
 
@@ -1233,3 +1233,42 @@ def test_lint_standing_language_is_heuristic(cc, tmp_path, monkeypatch, capsys):
     cc.cmd_lint(_lint_ns())
     f = [x for x in json.loads(capsys.readouterr().out) if x["code"] == "STANDING-LANGUAGE"]
     assert f and f[0]["severity"] == "heuristic"
+
+
+# ── customer edge (#13 Phase 1) ─────────────────────────────────────────────────
+def test_cmd_set_customer_writes_link_property(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "c")
+    cc.cmd_set(_set_ns(str(card), customer="sce"))
+    fm, _ = cc.read_card(str(card))
+    assert cc.unwrap_wikilink(fm["customer"]) == "sce"
+
+
+def test_card_to_dict_customer_scalar_list_and_absent(cc, tmp_path, monkeypatch):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    c1 = make_card(cards, "one")
+    c1.write_text(c1.read_text().replace("status: in-progress",
+                  'status: in-progress\ncustomer: "[[sce]]"'))
+    assert cc.card_to_dict(str(c1), "t")["customer"] == ["sce"]
+    c2 = make_card(cards, "two")
+    c2.write_text(c2.read_text().replace("status: in-progress",
+                  'status: in-progress\ncustomer:\n  - "[[sce]]"\n  - "[[nged]]"'))
+    assert cc.card_to_dict(str(c2), "t")["customer"] == ["sce", "nged"]
+    c3 = make_card(cards, "three")
+    assert cc.card_to_dict(str(c3), "t")["customer"] == []
+
+
+def test_lint_dangling_customer(cc, tmp_path, monkeypatch, capsys):
+    vault = tmp_path / "vault"
+    cards = vault / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    (vault / "Customers" / "sce").mkdir(parents=True)
+    (vault / "Customers" / "sce" / "sce.md").write_text("# sce\n")
+    c = make_card(cards, "c")
+    c.write_text(c.read_text().replace("status: in-progress",
+                 'status: in-progress\ntags: [area/work-ops]\ncustomer: "[[ghost]]"'))
+    assert ("DANGLING-LINK", "c.md") in _findings(cc, tmp_path, capsys)
+    c.write_text(c.read_text().replace('[[ghost]]', '[[sce]]'))
+    assert ("DANGLING-LINK", "c.md") not in _findings(cc, tmp_path, capsys)

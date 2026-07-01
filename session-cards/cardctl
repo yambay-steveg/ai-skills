@@ -151,6 +151,16 @@ def unwrap_wikilink(v):
     return v
 
 
+def unwrap_links(v):
+    """Unwrap a wikilink scalar OR a YAML list of them → a list of bare targets
+    (empties dropped). For link-properties that may be multi-valued — `customer`
+    (a card can serve several) or a multi-home `program`."""
+    if isinstance(v, list):
+        return [t for t in (unwrap_wikilink(x) for x in v) if t]
+    t = unwrap_wikilink(v) if v else ""
+    return [t] if t else []
+
+
 def area_of(tags):
     """First `area/<slug>` tag's slug (e.g. `area/tools` → `tools`), else ''."""
     for t in tags or []:
@@ -1137,6 +1147,7 @@ def card_to_dict(path, source):
         "tags": [t.strip() for t in tags],
         "program": unwrap_wikilink(fm.get("program") or ""),
         "project": unwrap_wikilink(fm.get("project") or ""),
+        "customer": unwrap_links(fm.get("customer")),
         "sessionId": unquote(fm.get("sessionId") or ""),
         "paths": [str(x).strip() for x in paths],
         "area": area_of(tags),
@@ -1490,6 +1501,9 @@ def cmd_set(args):
     if args.raised_at is not None:
         text = set_fm_field(text, "raised-at", f'"[[{unwrap_wikilink(args.raised_at)}]]"')
         changes.append(("raised-at", unwrap_wikilink(args.raised_at)))
+    if args.customer is not None:
+        text = set_fm_field(text, "customer", f'"[[{unwrap_wikilink(args.customer)}]]"')
+        changes.append(("customer", unwrap_wikilink(args.customer)))
 
     # paths axis (#14): absolute folders, not wikilinks — a filesystem write is correct.
     # Appends go after paths[0] (the primary/cwd folder is preserved); a missing folder
@@ -1614,13 +1628,13 @@ def cmd_lint(args):
             findings.append(_finding(name, "EMPTY-PROGRAM", "warn",
                 f"no program: while siblings in area/{ar} have one", source=src))
 
-        for field in ("program", "raised-at"):
+        for field in ("program", "raised-at", "customer"):
             raw = fm.get(field)
             if raw:
-                target = unwrap_wikilink(raw).strip()
-                if target and idx and target not in idx:
-                    findings.append(_finding(name, "DANGLING-LINK", "error",
-                        f"{field}: [[{target}]] resolves to no note in the vault", source=src))
+                for target in unwrap_links(raw):
+                    if target and idx and target not in idx:
+                        findings.append(_finding(name, "DANGLING-LINK", "error",
+                            f"{field}: [[{target}]] resolves to no note in the vault", source=src))
 
         for field in ("summary", "latest", "title"):
             v = fm.get(field)
@@ -1749,6 +1763,7 @@ def main():
     pst.add_argument("--add-area", action="append", help="add an additional area/* tag (repeatable)")
     pst.add_argument("--program", help='set program: "[[name]]" home link (repoints if present)')
     pst.add_argument("--raised-at", dest="raised_at", help='set raised-at: "[[forum]]" provenance link')
+    pst.add_argument("--customer", help='set customer: "[[slug]]" stakeholder link (Customers/<slug>)')
     pst.add_argument("--add-tag", action="append", help="add a facet tag verbatim, e.g. kind/geospatial (repeatable)")
     pst.add_argument("--remove-tag", action="append", help="remove a facet tag (repeatable)")
     pst.add_argument("--add-path", action="append", metavar="FOLDER",
