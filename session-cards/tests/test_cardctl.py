@@ -19,7 +19,7 @@ from conftest import NS
 def make_card(cards_dir, slug, *, status="in-progress", paths=(), session=None,
               title="A card", extra_body=""):
     cards_dir.mkdir(parents=True, exist_ok=True)
-    fm = [f"type: project", f"title: {title}", f"status: {status}"]
+    fm = ["type: project", f"title: {title}", f"status: {status}"]
     if session:
         fm.append(f"sessionId: {session}")
     fm.append("paths:")
@@ -1797,7 +1797,7 @@ def _findings(cc, tmp_path, capsys):
 def test_lint_flags_no_area_and_clean_card(cc, tmp_path, monkeypatch, capsys):
     cards = tmp_path / "Cards"
     monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
-    bad = make_card(cards, "noarea")  # no tags → NO-AREA
+    make_card(cards, "noarea")  # no tags → NO-AREA
     good = make_card(cards, "ok")
     good.write_text(good.read_text().replace("status: in-progress",
                                              "status: in-progress\ntags: [area/work-ops]"))

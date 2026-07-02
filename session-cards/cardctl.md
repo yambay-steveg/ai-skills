@@ -38,7 +38,7 @@ record. (`.card` is gitignored in this repo.)
 
 ## `reconcile` (R9 — card status → disk)
 
-Scans every card in both vault `Cards/` folders; for any with `status: archived` (or `done`)
+Scans every card in both vault `Cards/` folders; for any with `status: archived`
 whose `paths` include an `active/<x>` folder, it **moves that folder to `archive/YYYY-MM-<x>`** in
 its task repo (`git mv` + an `Archive:` commit) and updates the card's path. Cross-repo: card in
 the vault, folder in the task repo. **Dry-run by default** — add `--apply` to perform the moves.
