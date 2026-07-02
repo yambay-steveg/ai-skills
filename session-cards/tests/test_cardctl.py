@@ -6,6 +6,7 @@ are monkeypatched per test.
 """
 import json
 import os
+import re
 import uuid
 from pathlib import Path
 
@@ -1204,9 +1205,17 @@ def _fake_hs(monkeypatch, cc, *, stdout="", stderr="", returncode=0, raises=None
 
 def test_hs_code_windows_parses_json(cc, monkeypatch):
     _fake_hs(monkeypatch, cc,
-             stdout='[{"id":19146,"title":"X — session-card-board (Workspace)"}]')
+             stdout='[{"id":19146,"title":"X — session-card-board (Workspace)","focused":true}]')
     wins = cc.hs_code_windows()
-    assert wins == [{"id": 19146, "title": "X — session-card-board (Workspace)"}]
+    assert wins == [{"id": 19146, "title": "X — session-card-board (Workspace)",
+                     "focused": True}]
+
+
+def test_hs_code_windows_defaults_focused_false_when_absent(cc, monkeypatch):
+    # Output from a snippet without the focused flag still parses (focused → False).
+    _fake_hs(monkeypatch, cc, stdout='[{"id":1,"title":"T — t (Workspace)"}]')
+    assert cc.hs_code_windows() == [{"id": 1, "title": "T — t (Workspace)",
+                                     "focused": False}]
 
 
 def test_run_hs_closes_stdin(cc, monkeypatch):
@@ -1233,7 +1242,8 @@ def test_hs_code_windows_strips_hammerspoon_preamble(cc, monkeypatch):
     _fake_hs(monkeypatch, cc,
              stdout='-- Loading extension: json\n[{"id":21465,"title":"Determine Card Hiearchy — determine-card-hiearchy (Workspace)"}]')
     wins = cc.hs_code_windows()
-    assert wins == [{"id": 21465, "title": "Determine Card Hiearchy — determine-card-hiearchy (Workspace)"}]
+    assert wins == [{"id": 21465, "title": "Determine Card Hiearchy — determine-card-hiearchy (Workspace)",
+                     "focused": False}]
 
 
 def test_hs_code_windows_raises_when_port_unreachable(cc, monkeypatch):
@@ -1489,6 +1499,100 @@ def test_launch_refuses_archived_card_before_any_subprocess(cc, tmp_path, monkey
     with pytest.raises(SystemExit):
         cc.cmd_launch(NS(card=str(card), new=False, pick=False, delay=0.0, session=None))
     assert "cardctl reinstate" in capsys.readouterr().err
+
+
+# ── launch (window polling before the resume URI, #23) ──────────────────────────
+def _launch_ns(card, **kw):
+    base = dict(card=str(card), new=False, pick=False, delay=0.0, no_poll=False)
+    base.update(kw)
+    return NS(**base)
+
+
+def _launch_rig(cc, tmp_path, monkeypatch):
+    """A pinned card + mocked build_workspace/subprocess/sleep for cmd_launch
+    sequencing tests. Returns (card_path, calls) where calls records every
+    subprocess argv (code / open / osascript)."""
+    cards = tmp_path / "Cards"
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    card = make_card(cards, "my-card", paths=[str(folder)], session="sid-123",
+                     title="My Card")
+    calls = []
+    monkeypatch.setattr(cc.subprocess, "run", lambda argv, **kw: calls.append(list(argv)))
+    monkeypatch.setattr(cc, "build_workspace",
+                        lambda c, fm, sid: (tmp_path / "ws.code-workspace", [str(folder)]))
+    monkeypatch.setattr(cc.time, "sleep", lambda s: None)
+    return card, calls
+
+
+def test_launch_fires_uri_once_card_window_frontmost(cc, tmp_path, monkeypatch):
+    card, calls = _launch_rig(cc, tmp_path, monkeypatch)
+    monkeypatch.setattr(cc, "hs_code_windows", lambda: [
+        {"id": 1, "title": "Other — other-card (Workspace)", "focused": False},
+        {"id": 2, "title": "My Card — my-card (Workspace)", "focused": True},
+    ])
+    cc.cmd_launch(_launch_ns(card, delay=5.0))
+    assert [a for a in calls if a[0] == cc.OPEN] == [[cc.OPEN, cc.URI.format(sid="sid-123")]]
+
+
+def test_launch_raises_unfocused_window_then_fires(cc, tmp_path, monkeypatch):
+    card, calls = _launch_rig(cc, tmp_path, monkeypatch)
+    seq = [
+        [{"id": 7, "title": "My Card — my-card (Workspace)", "focused": False}],
+        [{"id": 7, "title": "My Card — my-card (Workspace)", "focused": True}],
+    ]
+    focused = []
+    monkeypatch.setattr(cc, "hs_code_windows", lambda: seq.pop(0))
+    monkeypatch.setattr(cc, "_focus_by_id", lambda wid: focused.append(wid) or True)
+    cc.cmd_launch(_launch_ns(card, delay=5.0))
+    assert focused == [7]                                  # raised by id, not hoped-for
+    assert any(a[0] == cc.OPEN for a in calls)
+
+
+def test_launch_times_out_cleanly_without_firing_uri(cc, tmp_path, monkeypatch, capsys):
+    card, calls = _launch_rig(cc, tmp_path, monkeypatch)
+    monkeypatch.setattr(cc, "hs_code_windows", lambda: [
+        {"id": 9, "title": "Other — other-card (Workspace)", "focused": True},
+    ])
+    with pytest.raises(SystemExit):
+        cc.cmd_launch(_launch_ns(card, delay=0.0))
+    err = capsys.readouterr().err
+    assert "my-card" in err and "--no-poll" in err
+    assert not any(a[0] == cc.OPEN for a in calls)         # never fired blind
+    assert any(a[0] == cc.CODE for a in calls)             # the window WAS opened
+
+
+def test_launch_falls_back_to_fixed_delay_when_hs_unavailable(cc, tmp_path, monkeypatch, capsys):
+    card, calls = _launch_rig(cc, tmp_path, monkeypatch)
+
+    def no_hs():
+        raise cc.HsUnavailable("hs (Hammerspoon CLI) not found")
+    monkeypatch.setattr(cc, "hs_code_windows", no_hs)
+    sleeps = []
+    monkeypatch.setattr(cc.time, "sleep", lambda s: sleeps.append(s))
+    cc.cmd_launch(_launch_ns(card, delay=2.5))
+    assert 2.5 in sleeps                                   # old fixed wait honoured
+    assert any(a[0] == cc.OPEN for a in calls)             # URI still fired
+    assert "Hammerspoon unavailable" in capsys.readouterr().out
+
+
+def test_launch_no_poll_skips_hammerspoon(cc, tmp_path, monkeypatch):
+    card, calls = _launch_rig(cc, tmp_path, monkeypatch)
+
+    def boom():
+        raise AssertionError("hs must not be consulted with --no-poll")
+    monkeypatch.setattr(cc, "hs_code_windows", boom)
+    cc.cmd_launch(_launch_ns(card, no_poll=True))
+    assert any(a[0] == cc.OPEN for a in calls)
+
+
+def test_launch_delay_default_matches_docs(cc):
+    # The argparse default and the cardctl.md launch doc must agree (#23 reconcile).
+    root = Path(cc.__file__).resolve().parent
+    m = re.search(r'"--delay",\s*type=float,\s*default=([\d.]+)',
+                  (root / "cardctl").read_text())
+    assert m, "couldn't find the --delay default in cardctl"
+    assert f"default {float(m.group(1)):g}" in (root / "cardctl.md").read_text()
 
 
 # ── set: the metadata writer ────────────────────────────────────────────────────

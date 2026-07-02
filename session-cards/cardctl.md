@@ -257,10 +257,18 @@ pure pointer card over `--path` folders; with no `--path` its `paths` is empty a
    extension's workspace-scoped lookup finds it (see `../poc/TEST.md`). With **`-d`** the workspace
    carries `claudeCode.allowDangerouslySkipPermissions:true` + `initialPermissionMode:bypassPermissions`
    (window-scoped only; regenerated each launch — never touches your real folders).
-4. After `--delay`s (default 1.5):
+4. Waits for the card's window: polls Hammerspoon (up to `--delay`s, default 3) until the
+   workspace window is open **and frontmost** — raising it by window id if it opens without
+   focus — then:
    - **resume** → fires `vscode://anthropic.claude-code/open?session=<id>`.
    - **new** → fires `vscode://anthropic.claude-code/open` (fresh conversation); prints a reminder
      to `cardctl link` if you want to pin it.
+
+   The URI has no window-targeting parameter (it lands in whichever window has focus), so if the
+   card's window never becomes frontmost within the budget, `launch` exits **without firing the
+   URI** — retry, raise `--delay`, or pass `--no-poll` for the old fixed-delay-then-fire
+   behaviour. When Hammerspoon is unavailable it falls back to that fixed delay automatically,
+   with a note.
 
 ### Buttons (Obsidian)
 
