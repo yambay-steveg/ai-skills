@@ -100,9 +100,33 @@ serve several; scalar-or-list in frontmatter), `sessionId`, `paths` (array), `ar
 `area/<slug>` tag's slug, e.g. `tools`), `source` (the vault domain key, `work`/`personal`), and
 `lastActive` (ISO-8601, timezone-aware — the newest session-transcript mtime across the pinned
 `sessionId`'s transcript **and** every transcript under the card's `paths`, or `null` if the card has
-no sessions; the board sorts on it for "most recently worked" and a live/recent badge). Scalar
-values are unquoted and `ensure_ascii=False` keeps em-dashes etc. literal. Without `--json` it prints a
-brief human listing (`title — status`). This is the read keystone for the board's hierarchy view.
+no sessions; the board sorts on it for "most recently worked" and a live/recent badge), and
+`sessions` (below). Scalar values are unquoted and `ensure_ascii=False` keeps em-dashes etc. literal.
+Without `--json` it prints a brief human listing (`title — status`). This is the read keystone for the
+board's hierarchy view.
+
+### `sessions` — the card's `## Sessions` history, structured (ai-skills#41)
+
+Each card object carries a `sessions` array: the card's `## Sessions` body list parsed into entries,
+in card order (newest first, per the `link` convention). Per entry:
+
+- `id` — the session uuid (the backticked lead of the line).
+- `date` — the text between the first two `—` separators (e.g. `02 Jul 2026`; `:` accepted as a
+  hand-written variant), `""` on a bare id-only line.
+- `context` — the rest of the line (the "what this session did" note), `""` if absent.
+- `resumable` — the transcript file still exists under `~/.claude/projects/…` (rarely false with a
+  long `cleanupPeriodDays`; tolerance for hand-typed ids, not a UX signal).
+- `projectDir` — the cwd recorded inside the transcript: the directory `claude --resume <id>` must
+  run from (sessions run in worktrees, not just the card's activity folder). `null` when the
+  transcript is missing or carries no cwd record.
+
+Parsing is tolerant, never fatal: lines that don't match the entry shape (hand-written notes,
+non-uuid backticks) are skipped, and a card without a `## Sessions` heading yields `[]`.
+
+Design call: this rides `list --json` rather than a separate `cardctl sessions <card>` subcommand —
+the board's `cardSource` already consumes `list --json` as its single read path (ADR 0001: the board
+never parses card markdown), so the fly-out Session history (slice 6) needs no second process spawn
+or per-card fetch.
 
 ## `windows` — open VS Code windows mapped to cards (Hammerspoon)
 
@@ -336,8 +360,8 @@ Note: `cardctl` only reads `paths`/`sessionId`; the rest are for the board/graph
 - ✅ `deploy` — single-sources every surface to both vaults + `~/bin`; idempotent, merge-safe;
   covered by the pytest suite and run end-to-end (`deploy all --apply` → clean re-run).
 - ✅ `list` — JSON read interface for the board (full card model, wikilink-unwrap, `area` derivation,
-  `source` domain key, `lastActive` recency timestamp) + a brief human listing; tested for
-  shape/fields/multi-vault.
+  `source` domain key, `lastActive` recency timestamp, `sessions` history with resume resolution) + a
+  brief human listing; tested for shape/fields/multi-vault.
 - ✅ `focus` — raises a card's VS Code window. Prefers Hammerspoon focus-by-id (matches the window whose
   slug == the card's), falling back to `osascript`/System Events AXRaise-by-title; best-effort, reports
   cleanly if Hammerspoon is unavailable and Accessibility permission is missing. Tested with both mocked.

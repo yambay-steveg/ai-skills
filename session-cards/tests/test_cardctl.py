@@ -705,6 +705,116 @@ def test_list_json_emits_archived_at(cc, tmp_path, monkeypatch, capsys):
     assert c["archivedAt"] == "2026-06-30T09:20:14.123456+08:00"
 
 
+# ── parse_sessions / session history in list --json (#41) ──────────────────────
+SID_A = "aaaaaaaa-1111-2222-3333-444444444444"
+SID_B = "bbbbbbbb-1111-2222-3333-444444444444"
+
+
+def sessions_card(cards_dir, slug, lines, heading="## Sessions"):
+    """A card whose `## Sessions` section holds `lines` verbatim, followed by
+    another section (so parsing must stop at the boundary)."""
+    card = make_card(cards_dir, slug)
+    card.write_text(card.read_text().replace(
+        "## Sessions\n",
+        heading + "\n\n" + "".join(ln + "\n" for ln in lines)
+        + "\n## Notes\n\n- `not-a-session` — prose under a later heading\n", 1))
+    return card
+
+
+def test_parse_sessions_happy_path_order_and_fields(cc):
+    text = ("---\ntitle: T\n---\n\n## Sessions\n\n"
+            f"- `{SID_A}` — 02 Jul 2026 — Implemented slice 5 — with a dash inside.\n"
+            f"- `{SID_B}` — 28 Jun 2026 — Earlier work.\n")
+    got = cc.parse_sessions(text)
+    assert got == [
+        {"id": SID_A, "date": "02 Jul 2026",
+         "context": "Implemented slice 5 — with a dash inside."},
+        {"id": SID_B, "date": "28 Jun 2026", "context": "Earlier work."},
+    ]  # card order preserved (newest first, per the link convention)
+
+
+def test_parse_sessions_tolerates_handwritten_variants(cc):
+    text = ("## Sessions\n"
+            f"- `{SID_A}` — 28 Jun 2026: colon before the context\n"
+            f"- `{SID_B}` — 28 Jun 2026\n")  # date only — link writes this shape
+    got = cc.parse_sessions(text)
+    assert got[0]["date"] == "28 Jun 2026"
+    assert got[0]["context"] == "colon before the context"
+    assert got[1] == {"id": SID_B, "date": "28 Jun 2026", "context": ""}
+
+
+def test_parse_sessions_skips_malformed_lines(cc):
+    text = ("## Sessions\n"
+            "- plain prose bullet, no uuid\n"
+            "- `docs/CLAUDE.md` — a backticked non-uuid\n"
+            "- `aaaaaaaa-1111` — truncated uuid\n"
+            f"- `{SID_A}` — 02 Jul 2026 — the one good line\n"
+            "stray non-bullet text\n")
+    got = cc.parse_sessions(text)
+    assert [e["id"] for e in got] == [SID_A]
+
+
+def test_parse_sessions_missing_heading_yields_empty(cc):
+    assert cc.parse_sessions("---\ntitle: T\n---\n\nbody, no sessions heading\n") == []
+
+
+def test_parse_sessions_stops_at_next_heading(cc):
+    text = ("## Sessions\n"
+            f"- `{SID_A}` — 02 Jul 2026 — in section\n"
+            "## Notes\n"
+            f"- `{SID_B}` — 02 Jul 2026 — outside section\n")
+    assert [e["id"] for e in cc.parse_sessions(text)] == [SID_A]
+
+
+def test_list_json_sessions_shape_and_resolution(cc, tmp_path, monkeypatch, capsys):
+    """JSON shape locked: each entry is exactly {id, date, context, resumable,
+    projectDir}; projectDir comes from the transcript's cwd record (the worktree
+    the session ran in), never the card's own paths."""
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(cc, "PROJECTS", projects)
+    cards = tmp_path / "Cards"
+    worktree = str((tmp_path / "worktrees" / "repo-slice-5").resolve())
+    fake_transcript(projects, worktree, sid=SID_A)
+    sessions_card(cards, "c", [
+        f"- `{SID_A}` — 02 Jul 2026 — ran in a worktree",
+        f"- `{SID_B}` — 28 Jun 2026 — transcript since deleted",
+    ])
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+
+    cc.cmd_list(NS(json=True))
+    got = json.loads(capsys.readouterr().out)[0]["sessions"]
+    assert got == [
+        {"id": SID_A, "date": "02 Jul 2026", "context": "ran in a worktree",
+         "resumable": True, "projectDir": worktree},
+        {"id": SID_B, "date": "28 Jun 2026", "context": "transcript since deleted",
+         "resumable": False, "projectDir": None},
+    ]
+
+
+def test_list_json_sessions_projectdir_none_without_cwd_record(cc, tmp_path, monkeypatch, capsys):
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(cc, "PROJECTS", projects)
+    cards = tmp_path / "Cards"
+    folder = str((tmp_path / "active" / "x").resolve())
+    fake_transcript(projects, folder, sid=SID_A, cwd_in_record=False)
+    sessions_card(cards, "c", [f"- `{SID_A}` — 02 Jul 2026 — cwd-less transcript"])
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+
+    cc.cmd_list(NS(json=True))
+    e = json.loads(capsys.readouterr().out)[0]["sessions"][0]
+    assert e["resumable"] is True    # the file exists…
+    assert e["projectDir"] is None   # …but its cwd can't be recovered
+
+
+def test_list_json_sessions_empty_without_entries(cc, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cc, "PROJECTS", tmp_path / "projects")
+    cards = tmp_path / "Cards"
+    make_card(cards, "bare")  # heading present, no entries
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    cc.cmd_list(NS(json=True))
+    assert json.loads(capsys.readouterr().out)[0]["sessions"] == []
+
+
 # ── set_fm_field (generic surgical editor) ──────────────────────────────────────
 def test_set_fm_field_inserts_when_absent(cc):
     doc = "---\ntitle: T\nstatus: archived\n---\nbody\n"

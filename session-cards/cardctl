@@ -194,20 +194,30 @@ def encode_cwd(cwd):
     return cwd.replace("/", "-")
 
 
+def _transcript_cwd(path):
+    """First `cwd` recorded inside a transcript — the directory the session ran in
+    (and the one `claude --resume` must run from). None when the file is unreadable
+    or carries no cwd record. The project *folder name* encodes the cwd too, but
+    '-' is ambiguous there (path separators vs literal hyphens), so the record is
+    the only reliable source."""
+    try:
+        with open(path) as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and rec.get("cwd"):
+                    return rec["cwd"]
+    except OSError:
+        pass
+    return None
+
+
 def origin_of_session(sid):
     """Locate a session's transcript and return the cwd it was created in."""
     hits = glob.glob(str(PROJECTS / "*" / f"{sid}.jsonl"))
-    if not hits:
-        return None
-    with open(hits[0]) as f:
-        for line in f:
-            try:
-                rec = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(rec, dict) and rec.get("cwd"):
-                return rec["cwd"]
-    return None
+    return _transcript_cwd(hits[0]) if hits else None
 
 
 def ensure_primary_folder(fm):
@@ -426,7 +436,58 @@ def cmd_launch(args):
         print(f"  → pin it later if you want with:  cardctl link {args.card}")
 
 
-UUID_RE = re.compile(r"`([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})`")
+_UUID_PAT = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+UUID_RE = re.compile(rf"`({_UUID_PAT})`")
+
+# A `## Sessions` body entry: - `uuid` — 02 Jul 2026 — context… (`link` writes the
+# id + date; an AI fills in the context). Hand-written variants substitute ':' for
+# either separator. Anything not led by a backticked uuid doesn't match.
+SESSION_ENTRY_RE = re.compile(rf"^-\s+`(?P<id>{_UUID_PAT})`\s*(?:[—:]\s*(?P<rest>.*))?$")
+
+
+def parse_sessions(text):
+    """Parse a card's `## Sessions` body list into [{id, date, context}] entries, in
+    card order (newest first, per the `link` convention). Tolerant by design (#41):
+    lines that don't match the entry shape — hand-written notes, non-uuid backticks —
+    are skipped, and a card without the heading yields []. Never fatal. Within an
+    entry, date and context split on the first ' — ' (or ': ' as fallback); a
+    date-only line gets context ''."""
+    entries, in_sec = [], False
+    for ln in text.splitlines():
+        if ln.startswith("#"):
+            in_sec = ln.strip().lower() == "## sessions"
+            continue
+        if not in_sec:
+            continue
+        m = SESSION_ENTRY_RE.match(ln.strip())
+        if not m:
+            continue
+        rest = (m.group("rest") or "").strip()
+        if " — " in rest:
+            date, _, context = rest.partition(" — ")
+        elif ": " in rest:
+            date, _, context = rest.partition(": ")
+        else:
+            date, context = rest, ""
+        entries.append({"id": m.group("id"), "date": date.strip(),
+                        "context": context.strip()})
+    return entries
+
+
+def session_history(text):
+    """A card's parsed `## Sessions` entries, each resolved against the transcripts
+    on disk: `resumable` (the transcript file still exists) and `projectDir` (the
+    cwd recorded in it — where `claude --resume <id>` must run from; sessions run
+    in worktrees, not just the card's activity folder). The read side behind the
+    board's fly-out Session history (ADR 0001: the board never parses card
+    markdown)."""
+    out = []
+    for e in parse_sessions(text):
+        hits = glob.glob(str(PROJECTS / "*" / f"{e['id']}.jsonl"))
+        e["resumable"] = bool(hits)
+        e["projectDir"] = _transcript_cwd(hits[0]) if hits else None
+        out.append(e)
+    return out
 
 
 def session_date(sid):
@@ -1296,7 +1357,7 @@ def cmd_which(args):
 def card_to_dict(path, source):
     """The board's card model for one card file (scalars unquoted, wikilinks
     unwrapped, `area` derived). `source` is the vault domain key (work/personal)."""
-    fm, _ = read_card(path)
+    fm, text = read_card(path)
     tags = fm.get("tags") if isinstance(fm.get("tags"), list) else []
     paths = fm.get("paths") if isinstance(fm.get("paths"), list) else []
     p = Path(path)
@@ -1312,6 +1373,7 @@ def card_to_dict(path, source):
         "project": unwrap_wikilink(fm.get("project") or ""),
         "customer": unwrap_links(fm.get("customer")),
         "sessionId": unquote(fm.get("sessionId") or ""),
+        "sessions": session_history(text),
         "paths": [str(x).strip() for x in paths],
         "area": area_of(tags),
         "source": source,
