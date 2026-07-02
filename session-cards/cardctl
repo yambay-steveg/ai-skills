@@ -578,7 +578,7 @@ def _relocate_transcripts(src, dst):
     new_proj.mkdir(parents=True, exist_ok=True)
     n = 0
     for item in old_proj.iterdir():
-        subprocess.run(["mv", str(item), str(new_proj / item.name)], check=True)
+        shutil.move(str(item), str(new_proj / item.name))
         n += 1
     try:
         old_proj.rmdir()
@@ -597,7 +597,7 @@ def _move_card_folder(card_path, src, raw_src, repo, dst, commit_msg):
     rel_dst = dst[len(repo) + 1:]
     r = subprocess.run(["git", "-C", repo, "mv", rel_src, rel_dst])
     if r.returncode != 0:  # folder not tracked — fall back to plain move + add
-        subprocess.run(["mv", src, dst], check=True)
+        shutil.move(src, dst)
         subprocess.run(["git", "-C", repo, "add", rel_dst], check=True)
     subprocess.run(["git", "-C", repo, "commit", "-q", "-m", commit_msg], check=True)
     n_tx = _relocate_transcripts(src, dst)
@@ -605,6 +605,14 @@ def _move_card_folder(card_path, src, raw_src, repo, dst, commit_msg):
     new_text = Path(card_path).read_text().replace(f"- {raw_src}", f"- {dst}", 1)
     Path(card_path).write_text(new_text)
     return n_tx
+
+
+def _step_desc(e):
+    """One-line description of a failed mutation step, for residual-state die()
+    messages (what exactly failed mid-batch)."""
+    if isinstance(e, subprocess.CalledProcessError):
+        return f"step {e.cmd!r} failed (exit {e.returncode})"
+    return f"step failed: {e}"
 
 
 def _all_card_files():
@@ -764,11 +772,15 @@ def cmd_reconcile(args):
             repo, _, _ = p.partition("/active/")
             leaf = Path(p).name
             target = f"{repo}/archive/{prefix}{leaf}"
+            if Path(target).exists():
+                print(f"SKIP (destination exists): {target}  [{c.name}]")
+                continue
             todo.append((c, p, raw, repo, leaf, target, text))
 
     if not todo:
         print("reconcile: nothing to do.")
         return
+    applied = []
     for c, p, raw, repo, leaf, target, text in todo:
         n_tx = _count_transcripts(p)
         tx_note = f"  (+{n_tx} session transcript(s) relocated)" if n_tx else ""
@@ -781,7 +793,13 @@ def cmd_reconcile(args):
         fm, _ = read_card(c)
         if not str(fm.get("archivedAt") or "").strip():
             c.write_text(set_fm_field(c.read_text(), "archivedAt", now_iso()))
-        moved = _move_card_folder(c, p, raw, repo, target, f"Archive: {leaf}")
+        try:
+            moved = _move_card_folder(c, p, raw, repo, target, f"Archive: {leaf}")
+        except (subprocess.CalledProcessError, OSError) as e:
+            done = "; ".join(applied) or "none"
+            die(f"reconcile {p} [{c.name}]: {_step_desc(e)}; completed so far: {done}; "
+                "remaining folders untouched — fix the cause and re-run reconcile")
+        applied.append(f"{p} → {target}")
         note = f"  (+{moved} session transcript(s) relocated)" if moved else ""
         print(f"        moved + committed in {Path(repo).name}; card path updated{note}")
     if not args.apply:
@@ -797,29 +815,27 @@ def _emit(args, result, human):
 
 
 def cmd_archive(args):
-    """Archive a card now (R9, board-triggered): set status→archived, stamp
-    `archivedAt`, and file each active/ folder to archive/YYYY-MM-<x> (relocating its
-    session transcripts). The immediate, single-card equivalent of `reconcile --apply`
-    plus the archivedAt stamp. R14 Pattern B: a folder shared with a still-live card
-    is NOT moved (status + archivedAt are still set), and reported under `skipped`."""
+    """Archive a card now (R9, board-triggered): file each active/ folder to
+    archive/YYYY-MM-<x> (relocating its session transcripts), then set status→archived
+    and stamp `archivedAt` — frontmatter LAST, so a failed move leaves the card live.
+    The immediate, single-card equivalent of `reconcile --apply` plus the archivedAt
+    stamp. R14 Pattern B: a folder shared with a still-live card is NOT moved (status
+    + archivedAt are still set), and reported under `skipped`."""
     card = args.card
     if not Path(card).is_file():
         die(f"{card}: no such card")
     if not card_under_cards_dirs(card):
         die(f"{card}: not inside a configured Cards/ folder")
-    fm, text = read_card(card)
-    paths = [(raw, expand(raw)) for raw in (fm.get("paths") or [])]
+    fm, _ = read_card(card)
     live = _live_folder_refs(card)
     prefix = datetime.date.today().strftime("%Y-%m-")
     stamp = now_iso()
 
-    # Frontmatter first; _move_card_folder re-reads & rewrites the path line afterwards.
-    text = set_fm_field(text, "status", "archived")
-    text = set_fm_field(text, "archivedAt", stamp)
-    Path(card).write_text(text)
-
-    moved, skipped = [], []
-    for raw, p in paths:
+    # Preflight (no mutation): plan every move, validating destination + repo up
+    # front so a collision or missing repo dies before anything is touched.
+    plan, skipped = [], []
+    for raw in (fm.get("paths") or []):
+        p = expand(raw)
         if "/active/" not in p or not Path(p).is_dir():
             continue
         if p in live:
@@ -828,8 +844,28 @@ def cmd_archive(args):
         repo, _, _ = p.partition("/active/")
         leaf = Path(p).name
         target = f"{repo}/archive/{prefix}{leaf}"
-        n_tx = _move_card_folder(card, p, raw, repo, target, f"Archive: {leaf}")
+        if Path(target).exists():
+            die(f"archive destination already exists: {target} — rename or remove it first")
+        if not (Path(repo) / ".git").exists():
+            die(f"{repo}: not a git repository — cannot archive {p}")
+        plan.append((raw, p, repo, leaf, target))
+
+    # Moves next; frontmatter LAST — a mid-batch failure leaves the card live, and
+    # already-moved paths no longer match /active/, so a re-run completes the rest.
+    moved = []
+    for raw, p, repo, leaf, target in plan:
+        try:
+            n_tx = _move_card_folder(card, p, raw, repo, target, f"Archive: {leaf}")
+        except (subprocess.CalledProcessError, OSError) as e:
+            done = "; ".join(f"{m['from']} → {m['to']}" for m in moved) or "none"
+            die(f"archive {p}: {_step_desc(e)}; completed so far: {done}; "
+                "card frontmatter NOT updated (status unchanged) — fix the cause and re-run")
         moved.append({"from": p, "to": target, "transcripts": n_tx})
+
+    text = Path(card).read_text()  # re-read: the moves rewrote the card's path lines
+    text = set_fm_field(text, "status", "archived")
+    text = set_fm_field(text, "archivedAt", stamp)
+    Path(card).write_text(text)
 
     result = {"ok": True, "status": "archived", "archivedAt": stamp,
               "moved": moved, "skipped": skipped}
@@ -844,16 +880,17 @@ def cmd_archive(args):
 
 
 def cmd_reinstate(args):
-    """Un-archive a card (the reverse of archive): set status→in-progress, clear
-    `archivedAt`, and move each archive/YYYY-MM-<x> folder back to active/<x>
-    (relocating transcripts back). Refuses a non-archived card; refuses when the
-    active/ destination already exists (no clobber)."""
+    """Un-archive a card (the reverse of archive): move each archive/YYYY-MM-<x>
+    folder back to active/<x> (relocating transcripts back), then set
+    status→in-progress and clear `archivedAt` — frontmatter LAST, so a failed move
+    leaves the card archived. Refuses a non-archived card; refuses when the active/
+    destination already exists (no clobber)."""
     card = args.card
     if not Path(card).is_file():
         die(f"{card}: no such card")
     if not card_under_cards_dirs(card):
         die(f"{card}: not inside a configured Cards/ folder")
-    fm, text = read_card(card)
+    fm, _ = read_card(card)
     status = str(fm.get("status") or "").strip().lower()
     if status != "archived":
         die(f"{Path(card).name}: not archived (status={status or '?'}) — "
@@ -874,14 +911,22 @@ def cmd_reinstate(args):
             die(f"{dst} already exists — reinstate would clobber it")
         plan.append((raw, p, repo, dst, bare))
 
+    # Moves first, frontmatter LAST — a mid-batch failure leaves the card archived
+    # (status/archivedAt untouched); re-running reinstate completes the remainder.
+    moved = []
+    for raw, p, repo, dst, bare in plan:
+        try:
+            n_tx = _move_card_folder(card, p, raw, repo, dst, f"Reinstate: {bare}")
+        except (subprocess.CalledProcessError, OSError) as e:
+            done = "; ".join(f"{m['from']} → {m['to']}" for m in moved) or "none"
+            die(f"reinstate {p}: {_step_desc(e)}; completed so far: {done}; "
+                "card frontmatter NOT updated (still archived) — fix the cause and re-run")
+        moved.append({"from": p, "to": dst, "transcripts": n_tx})
+
+    text = Path(card).read_text()  # re-read: the moves rewrote the card's path lines
     text = set_fm_field(text, "status", "in-progress")
     text = set_fm_field(text, "archivedAt", None)
     Path(card).write_text(text)
-
-    moved = []
-    for raw, p, repo, dst, bare in plan:
-        n_tx = _move_card_folder(card, p, raw, repo, dst, f"Reinstate: {bare}")
-        moved.append({"from": p, "to": dst, "transcripts": n_tx})
 
     result = {"ok": True, "status": "in-progress", "moved": moved}
     lines = [f"{Path(card).name}: reinstated (status → in-progress, archivedAt cleared)"]
@@ -924,14 +969,25 @@ def cmd_delete(args):
         repo, _, _ = p.partition("/archive/")
         leaf = Path(p).name
         rel = p[len(repo) + 1:]
-        r = subprocess.run(["git", "-C", repo, "rm", "-r", "-q", rel])
-        if r.returncode != 0:  # not tracked — plain rm then stage the removal
-            subprocess.run(["rm", "-rf", p], check=True)
-            subprocess.run(["git", "-C", repo, "add", "-A"], check=True)
-        subprocess.run(["git", "-C", repo, "commit", "-q", "-m", f"Delete: {leaf}"], check=True)
-        proj = PROJECTS / encode_cwd(p)
-        if proj.is_dir():
-            subprocess.run(["rm", "-rf", str(proj)], check=True)
+        try:
+            r = subprocess.run(["git", "-C", repo, "rm", "-r", "-q", rel])
+            if r.returncode != 0:  # not tracked — plain rm then stage just that path
+                shutil.rmtree(p)
+                # no check: a fully untracked folder leaves nothing matching the
+                # pathspec (git add exits 128); the staged-guard below covers it
+                subprocess.run(["git", "-C", repo, "add", "-A", "--", rel],
+                               capture_output=True)
+            # A fully untracked folder stages nothing — skip the empty commit.
+            if subprocess.run(["git", "-C", repo, "diff", "--cached", "--quiet"]).returncode:
+                subprocess.run(["git", "-C", repo, "commit", "-q", "-m", f"Delete: {leaf}"],
+                               check=True)
+            proj = PROJECTS / encode_cwd(p)
+            if proj.is_dir():
+                shutil.rmtree(str(proj))
+        except (subprocess.CalledProcessError, OSError) as e:
+            done = "; ".join(deleted) or "none"
+            die(f"delete {p}: {_step_desc(e)}; deleted so far: {done}; "
+                "card note NOT removed — fix the cause and re-run delete")
         deleted.append(p)
 
     Path(card).unlink()  # remove the card note from the vault
