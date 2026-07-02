@@ -61,6 +61,57 @@ def test_parse_fm_empty_block_list_is_list(cc):
     assert fm["paths"] == []
 
 
+# ── parse_fm / read_card hardening (#22) ──────────────────────────────────────
+def test_parse_fm_inline_comment_after_inline_list(cc):
+    fm = cc.parse_fm("tags: [area/tools] # note\n")
+    assert fm["tags"] == ["area/tools"]  # list, not the scalar "[area/tools] # note"
+
+
+def test_parse_fm_inline_comment_after_scalar(cc):
+    fm = cc.parse_fm("status: done # finished\n")
+    assert fm["status"] == "done"
+
+
+def test_parse_fm_inline_comment_after_block_item(cc):
+    fm = cc.parse_fm("paths:\n  - /x/y # keep\n")
+    assert fm["paths"] == ["/x/y"]
+
+
+def test_parse_fm_quoted_value_keeps_hash(cc):
+    fm = cc.parse_fm('summary: "a # b"\n')
+    assert fm["summary"] == '"a # b"'  # comment not clipped inside quotes
+
+
+def test_parse_fm_quoted_value_trailing_comment_clipped(cc):
+    fm = cc.parse_fm('summary: "a # b" # note\n')
+    assert fm["summary"] == '"a # b"'
+
+
+def test_parse_fm_bare_hash_value_untouched(cc):
+    fm = cc.parse_fm("colour: #fff\n")
+    assert fm["colour"] == "#fff"  # no whitespace before '#' → not a comment
+
+
+def test_parse_fm_whole_line_comment_still_ignored(cc):
+    fm = cc.parse_fm("# just a comment\nstatus: backlog\n")
+    assert fm == {"status": "backlog"}
+
+
+def test_read_card_dies_on_unterminated_frontmatter(cc, tmp_path, capsys):
+    card = tmp_path / "broken.md"
+    card.write_text("---\ntitle: T\nstatus: backlog\nbody without closing fence\n")
+    with pytest.raises(SystemExit):
+        cc.read_card(str(card))
+    assert "unterminated frontmatter" in capsys.readouterr().err
+
+
+def test_read_card_body_thematic_break_ok(cc, tmp_path):
+    card = tmp_path / "ok.md"
+    card.write_text("---\ntitle: T\nstatus: backlog\n---\nbody\n\n---\n\nmore body\n")
+    fm, text = cc.read_card(str(card))
+    assert fm["title"] == "T" and "more body" in text
+
+
 # ── ensure_primary_folder ──────────────────────────────────────────────────────
 def test_ensure_primary_folder_creates_when_parent_exists(cc, tmp_path):
     new = tmp_path / "act"
@@ -571,6 +622,24 @@ def test_set_fm_field_removes_when_value_none(cc):
     out = cc.set_fm_field(doc, "archivedAt", None)
     assert "archivedAt:" not in out
     assert "title: T" in out and "status: archived" in out
+
+
+def test_set_fm_field_replace_is_byte_for_byte(cc):
+    doc = ('---\ntype: project\ntitle: "T: a card"\nstatus: backlog\n'
+           'foreign: kept # as-is\n---\nbody\n')
+    out = cc.set_fm_field(doc, "status", "done")
+    assert out == doc.replace("status: backlog", "status: done")
+
+
+def test_set_fm_field_delete_absent_inserts_nothing(cc):
+    doc = "---\ntitle: T\n---\nbody\n"
+    assert cc.set_fm_field(doc, "archivedAt", None) == doc
+
+
+def test_set_fm_field_duplicate_keys_first_wins_rest_dropped(cc):
+    doc = "---\ntitle: T\nstatus: backlog\nstatus: done\n---\nbody\n"
+    out = cc.set_fm_field(doc, "status", "on-hold")
+    assert out == "---\ntitle: T\nstatus: on-hold\n---\nbody\n"
 
 
 # ── archive / reinstate / delete (real git repo) ─────────────────────────────────
@@ -1207,6 +1276,48 @@ def test_set_paths_in_text_inserts_when_absent(cc):
     out = cc.set_paths_in_text(doc, ["/a/b"])
     assert "paths:\n  - /a/b\n" in out
     assert out.count("---") == 2
+
+
+def test_set_paths_in_text_drops_empty_placeholder(cc):
+    doc = "---\ntitle: X\npaths:\n  - \n---\nbody\n"  # cmd_new's empty placeholder
+    out = cc.set_paths_in_text(doc, ["/a/b"])
+    assert out == "---\ntitle: X\npaths:\n  - /a/b\n---\nbody\n"
+
+
+# ── writer round-trip (consolidated _edit_frontmatter, #22) ──────────────────────
+def test_writer_roundtrip_preserves_foreign_fields_and_order(cc):
+    doc = ('---\n'
+           'type: project\n'
+           'title: "T: with # both specials"\n'
+           'status: backlog\n'
+           'tags: [area/tools]\n'
+           'program: "[[eng-arch]]"\n'
+           'paths:\n'
+           '  - /a/b\n'
+           'sessionId: abc-123\n'
+           '---\n'
+           '\n## Sessions\n\n- one\n')
+    out = cc.set_status_in_text(doc, "done")
+    out = cc.set_tags_in_text(out, ["area/v7", "kind/geo"])
+    out = cc.set_paths_in_text(out, ["/c/d", "/e/f"])
+    out = cc.set_fm_field(out, "sessionId", "def-456")
+    # everything else byte-for-byte, key order and quoting intact
+    assert out == ('---\n'
+                   'type: project\n'
+                   'title: "T: with # both specials"\n'
+                   'status: done\n'
+                   'tags: [area/v7, kind/geo]\n'
+                   'program: "[[eng-arch]]"\n'
+                   'paths:\n'
+                   '  - /c/d\n'
+                   '  - /e/f\n'
+                   'sessionId: def-456\n'
+                   '---\n'
+                   '\n## Sessions\n\n- one\n')
+    # and it re-parses to the edited values
+    fm = cc.parse_fm(out.split("---", 2)[1])
+    assert (fm["status"], fm["tags"], fm["paths"], fm["sessionId"]) == \
+        ("done", ["area/v7", "kind/geo"], ["/c/d", "/e/f"], "def-456")
 
 
 def test_cmd_set_add_path_appends_after_primary(cc, tmp_path, monkeypatch):

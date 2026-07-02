@@ -101,6 +101,18 @@ def die(msg):
     sys.exit(1)
 
 
+def _strip_inline_comment(v):
+    """Drop a trailing ` # comment` from a frontmatter value, respecting quotes.
+    Quoted scalars keep their quoted span verbatim; unquoted values are cut at the
+    first whitespace-preceded '#'. A value that *is* a bare '#…' token is left alone
+    (full-line comments are handled by the caller)."""
+    v = v.strip()
+    if v[:1] in ('"', "'"):
+        end = v.find(v[0], 1)
+        return v[:end + 1] if end != -1 else v      # keep only the quoted span
+    return re.split(r"\s#", v, maxsplit=1)[0].strip()  # cut at first ` #` / `\t#`
+
+
 def parse_fm(fm):
     """Minimal frontmatter parser for the card schema: scalars, inline lists
     (`tags: [a, b]`) and block lists (`paths:` then `  - item`). No deps."""
@@ -112,11 +124,11 @@ def parse_fm(fm):
             if key is not None:
                 data.setdefault(key, [])
                 if isinstance(data[key], list):
-                    data[key].append(raw.strip()[2:].strip())
+                    data[key].append(_strip_inline_comment(raw.strip()[2:]))
             continue
         if ":" in raw:
             k, _, v = raw.partition(":")
-            key, v = k.strip(), v.strip()
+            key, v = k.strip(), _strip_inline_comment(v)
             if v == "":
                 data[key] = []                      # block list to follow
             elif v.startswith("[") and v.endswith("]"):
@@ -130,7 +142,10 @@ def read_card(path):
     text = Path(path).read_text()
     if not text.startswith("---"):
         die(f"{path}: no YAML frontmatter")
-    _, fm, _body = text.split("---", 2)
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        die(f"{path}: unterminated frontmatter (opening '---' with no closing '---')")
+    _, fm, _body = parts
     return parse_fm(fm), text
 
 
@@ -481,30 +496,56 @@ def card_under_cards_dirs(path):
                for cd in CARDS_DIRS.values())
 
 
-def set_fm_field(text, key, value):
-    """Return `text` with frontmatter `key:` set to `value`, leaving the rest
-    byte-for-byte (surgical single-line edit — body, other fields, quoting and key
-    order untouched, so the vault git diff stays minimal). Replaces a `key:` line in
-    place; if the frontmatter has none, inserts one before the closing `---`. When
-    `value` is None the line is *removed* (and none inserted) — used to clear
-    `archivedAt` on reinstate."""
-    out, in_fm, seen_open, wrote = [], False, False, False
-    for ln in text.splitlines(keepends=True):
+def _edit_frontmatter(text, key, render, consume_block=False):
+    """Surgically replace/insert/delete a single frontmatter `key`, leaving the rest
+    byte-for-byte (body, other fields, quoting and key order untouched, so the vault
+    git diff stays minimal). `render(old_line|None) -> str|None`: replacement text
+    (newline-terminated, may be multi-line), or None to delete the line (and, when
+    the key is absent, insert nothing); called with None before the closing fence if
+    no `key:` line exists. With `consume_block`, indented `- …` items trailing the
+    key line are dropped too. Duplicate `key:` lines: the first is rendered, the
+    rest dropped. The one fence-walker behind set_fm_field / set_tags_in_text /
+    set_paths_in_text."""
+    lines = text.splitlines(keepends=True)
+    out, in_fm, seen_open, done, i = [], False, False, False, 0
+    while i < len(lines):
+        ln = lines[i]
         if ln.strip() == "---":
             if not seen_open:
                 seen_open = in_fm = True
-                out.append(ln); continue
-            if in_fm:
-                if value is not None and not wrote:
-                    out.append(f"{key}: {value}\n"); wrote = True
+                out.append(ln); i += 1; continue
+            if in_fm:                                   # closing fence
+                if not done:
+                    rep = render(None)                  # key absent → maybe insert
+                    if rep is not None:
+                        out.append(rep)
+                    done = True
                 in_fm = False
-                out.append(ln); continue
+                out.append(ln); i += 1; continue
         if in_fm and ln.startswith(f"{key}:"):
-            if value is not None and not wrote:
-                out.append(f"{key}: {value}\n"); wrote = True
-            continue  # value is None → drop the line; or a dup → drop it
-        out.append(ln)
+            if not done:                                # dup key lines: drop the rest
+                rep = render(ln)
+                if rep is not None:
+                    out.append(rep)
+                done = True
+            i += 1
+            if consume_block:                           # drop old `  - …` items (and
+                while i < len(lines) and lines[i][:1] in (" ", "\t") \
+                        and lines[i].lstrip().startswith("-"):  # empty placeholders)
+                    i += 1
+            continue
+        out.append(ln); i += 1
     return "".join(out)
+
+
+def set_fm_field(text, key, value):
+    """Return `text` with frontmatter `key:` set to `value` (surgical — see
+    {@link _edit_frontmatter}). Replaces a `key:` line in place; if the frontmatter
+    has none, inserts one before the closing `---`. When `value` is None the line is
+    *removed* (and none inserted) — used to clear `archivedAt` on reinstate."""
+    return _edit_frontmatter(
+        text, key,
+        lambda old: None if value is None else f"{key}: {value}\n")
 
 
 def set_status_in_text(text, status):
@@ -1427,63 +1468,19 @@ def _format_tag_block(tags, inline):
 def set_tags_in_text(text, tags):
     """Replace the frontmatter `tags:` with `tags` (existing inline-vs-block form
     preserved; inserts an inline `tags:` before the closing fence if none exists).
-    Surgical like {@link set_fm_field} — only the tags lines change."""
-    lines = text.splitlines(keepends=True)
-    out, in_fm, seen_open, done, i = [], False, False, False, 0
-    while i < len(lines):
-        ln = lines[i]
-        if ln.strip() == "---":
-            if not seen_open:
-                seen_open = in_fm = True
-                out.append(ln); i += 1; continue
-            if in_fm:
-                if not done:
-                    out.append(_format_tag_block(tags, inline=True)); done = True
-                in_fm = False
-                out.append(ln); i += 1; continue
-        if in_fm and ln.startswith("tags:"):
-            inline = bool(ln.partition(":")[2].strip())  # `tags: [..]` vs block
-            if not done:
-                out.append(_format_tag_block(tags, inline)); done = True
-            i += 1
-            if not inline:  # drop the trailing block-list items
-                while i < len(lines) and lines[i][:1] in (" ", "\t") \
-                        and lines[i].lstrip().startswith("- "):
-                    i += 1
-            continue
-        out.append(ln); i += 1
-    return "".join(out)
+    Surgical — see {@link _edit_frontmatter}."""
+    def render(old):
+        inline = bool(old.partition(":")[2].strip()) if old else True  # keep form
+        return _format_tag_block(tags, inline)
+    return _edit_frontmatter(text, "tags", render, consume_block=True)
 
 
 def set_paths_in_text(text, paths):
     """Replace the frontmatter `paths:` block list with `paths` (always block form —
-    one `  - <abs>` line each). Surgical like {@link set_tags_in_text}: only the paths
-    lines change. Inserts a `paths:` block before the closing fence if none exists."""
-    lines = text.splitlines(keepends=True)
-    out, in_fm, seen_open, done, i = [], False, False, False, 0
+    one `  - <abs>` line each). Inserts a `paths:` block before the closing fence if
+    none exists. Surgical — see {@link _edit_frontmatter}."""
     block = "paths:\n" + "".join(f"  - {p}\n" for p in paths)
-    while i < len(lines):
-        ln = lines[i]
-        if ln.strip() == "---":
-            if not seen_open:
-                seen_open = in_fm = True
-                out.append(ln); i += 1; continue
-            if in_fm:
-                if not done:
-                    out.append(block); done = True
-                in_fm = False
-                out.append(ln); i += 1; continue
-        if in_fm and ln.startswith("paths:"):
-            if not done:
-                out.append(block); done = True
-            i += 1
-            # drop the existing block-list items (`  - ...`) and any empty placeholder
-            while i < len(lines) and lines[i][:1] in (" ", "\t") \
-                    and lines[i].lstrip().startswith("-"):
-                i += 1
-            continue
-        out.append(ln); i += 1
-    return "".join(out)
+    return _edit_frontmatter(text, "paths", lambda old: block, consume_block=True)
 
 
 def cmd_set(args):
