@@ -417,8 +417,10 @@ def session_date(sid):
 def cmd_link(args):
     """Pin a session as the card's `sessionId` AND log it under the card's `## Sessions`
     history (newest first; an AI fills in 'what it did'). Re-pin freely — the previous pin
-    stays logged. Pick the session: `--session <id>` | `--current` (the running session) |
-    newest transcript under the card's folder (`--cwd` to point elsewhere)."""
+    stays logged. Pick the session: `--session <id>` | `--current` (newest transcript
+    across ALL the card's paths — never other projects, #30; `--cwd` narrows to one
+    folder) | newest transcript under the card's primary folder (`--cwd` to point
+    elsewhere)."""
     if not Path(args.card).is_file():
         die(f"{args.card}: no such card")
     if not card_under_cards_dirs(args.card):
@@ -428,10 +430,20 @@ def cmd_link(args):
     if args.session:
         sid = args.session.strip()
     elif args.current:
-        tx = glob.glob(str(PROJECTS / "*" / "*.jsonl"))
+        # "Current" must be scoped to the card's own folders: the newest transcript
+        # *globally* can belong to another card's live window, silently pinning (and
+        # logging under ## Sessions) an unrelated session (#30).
+        origins = ([expand(args.cwd)] if args.cwd else
+                   [expand(p) for p in (fm.get("paths") or [])
+                    if Path(expand(p)).is_dir()])
+        if not origins:
+            die(f"{args.card}: no folder to scope --current to — "
+                f"pass --session <id> or --cwd")
+        tx = [t for o in origins for t in (PROJECTS / encode_cwd(o)).glob("*.jsonl")]
         if not tx:
-            die("no session transcripts found")
-        sid = Path(max(tx, key=lambda p: Path(p).stat().st_mtime)).stem
+            die(f"no session transcripts under {', '.join(origins)}; "
+                f"pass --session <id> for a session that ran elsewhere")
+        sid = max(tx, key=lambda p: p.stat().st_mtime).stem
         print(f"current session: {sid}")
     else:
         origin = args.cwd or next((expand(p) for p in (fm.get("paths") or [])
@@ -1795,7 +1807,8 @@ def main():
     pk.add_argument("--session", help="pin this exact session id; "
                                       "needed for sessions that ran outside the card's folder")
     pk.add_argument("--current", action="store_true",
-                    help="pin the CURRENT (running) session — the newest transcript across all projects")
+                    help="pin the CURRENT (running) session — the newest transcript "
+                         "under the card's own paths (with --cwd: under that folder)")
     pk.add_argument("--cwd", help="folder to search for the newest session (default: first existing path)")
     pk.add_argument("--force", action="store_true", help="(accepted for compatibility; re-pin is always non-destructive now)")
     pk.set_defaults(func=cmd_link)

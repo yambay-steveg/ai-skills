@@ -5,6 +5,7 @@ never the real vaults or ~/.claude/projects. Module-level globals (CARDS_DIRS, P
 are monkeypatched per test.
 """
 import json
+import os
 import uuid
 from pathlib import Path
 
@@ -254,6 +255,100 @@ def test_link_explicit_session_id(cc, tmp_path, monkeypatch):
     card = make_card(cards, "x-card", paths=[str(tmp_path / "active" / "x")])
     cc.cmd_link(NS(card=str(card), session="dead-beef", current=False, cwd=None, force=False))
     assert "sessionId: dead-beef" in card.read_text()
+
+
+def _set_mtime(projects, cwd, sid, when):
+    os.utime(projects / cwd.replace("/", "-") / f"{sid}.jsonl", (when, when))
+
+
+def test_link_current_scoped_to_card_paths_not_global_newest(cc, tmp_path, monkeypatch):
+    """#30: a newer transcript in an unrelated project must not win --current —
+    neither the pin nor the ## Sessions history line."""
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(cc, "PROJECTS", projects)
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    folder = tmp_path / "active" / "x"
+    folder.mkdir(parents=True)
+    other = tmp_path / "active" / "unrelated"
+    other.mkdir(parents=True)
+    card = make_card(cards, "x-card", paths=[str(folder)])
+    mine = fake_transcript(projects, str(folder))
+    stray = fake_transcript(projects, str(other))
+    _set_mtime(projects, str(folder), mine, 1_000)
+    _set_mtime(projects, str(other), stray, 2_000)   # globally newest, wrong card
+
+    cc.cmd_link(NS(card=str(card), session=None, current=True, cwd=None, force=False))
+    text = card.read_text()
+    assert f"sessionId: {mine}" in text
+    assert stray not in text                          # no pin AND no history line
+
+
+def test_link_current_picks_newest_across_all_card_paths(cc, tmp_path, monkeypatch):
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(cc, "PROJECTS", projects)
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    primary = tmp_path / "active" / "x"
+    worktree = tmp_path / "worktrees" / "x-slice"
+    primary.mkdir(parents=True)
+    worktree.mkdir(parents=True)
+    card = make_card(cards, "x-card", paths=[str(primary), str(worktree)])
+    older = fake_transcript(projects, str(primary))
+    newer = fake_transcript(projects, str(worktree))
+    _set_mtime(projects, str(primary), older, 1_000)
+    _set_mtime(projects, str(worktree), newer, 2_000)
+
+    cc.cmd_link(NS(card=str(card), session=None, current=True, cwd=None, force=False))
+    assert f"sessionId: {newer}" in card.read_text()
+
+
+def test_link_current_with_cwd_scopes_to_that_cwd(cc, tmp_path, monkeypatch):
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(cc, "PROJECTS", projects)
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    folder = tmp_path / "active" / "x"
+    elsewhere = tmp_path / "active" / "y"
+    folder.mkdir(parents=True)
+    elsewhere.mkdir(parents=True)
+    card = make_card(cards, "x-card", paths=[str(folder)])
+    in_paths = fake_transcript(projects, str(folder))
+    in_cwd = fake_transcript(projects, str(elsewhere))
+    _set_mtime(projects, str(folder), in_paths, 2_000)    # newer, but out of scope
+    _set_mtime(projects, str(elsewhere), in_cwd, 1_000)
+
+    cc.cmd_link(NS(card=str(card), session=None, current=True,
+                   cwd=str(elsewhere), force=False))
+    assert f"sessionId: {in_cwd}" in card.read_text()
+
+
+def test_link_current_dies_when_card_folder_has_no_transcripts(cc, tmp_path, monkeypatch, capsys):
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(cc, "PROJECTS", projects)
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    folder = tmp_path / "active" / "x"
+    folder.mkdir(parents=True)
+    card = make_card(cards, "x-card", paths=[str(folder)])
+    fake_transcript(projects, str(tmp_path / "active" / "unrelated-dir"))
+    before = card.read_text()
+
+    with pytest.raises(SystemExit):
+        cc.cmd_link(NS(card=str(card), session=None, current=True, cwd=None, force=False))
+    assert "no session transcripts under" in capsys.readouterr().err
+    assert card.read_text() == before                 # untouched
+
+
+def test_link_current_dies_when_card_has_no_folders(cc, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cc, "PROJECTS", tmp_path / "projects")
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "x-card", paths=[str(tmp_path / "does-not-exist")])
+
+    with pytest.raises(SystemExit):
+        cc.cmd_link(NS(card=str(card), session=None, current=True, cwd=None, force=False))
+    assert "no folder to scope --current to" in capsys.readouterr().err
 
 
 def test_link_refuses_markdown_outside_cards_dirs(cc, tmp_path, monkeypatch, capsys):
