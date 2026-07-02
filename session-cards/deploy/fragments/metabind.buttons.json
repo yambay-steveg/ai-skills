@@ -34,23 +34,6 @@
     ]
   },
   {
-    "label": "\u26a1 Launch (skip approvals)",
-    "icon": "",
-    "style": "destructive",
-    "class": "",
-    "cssStyle": "",
-    "backgroundImage": "",
-    "tooltip": "Launch in bypassPermissions mode",
-    "id": "launch-dangerous",
-    "hidden": false,
-    "actions": [
-      {
-        "type": "command",
-        "command": "obsidian-shellcommands:shell-command-scdanger001"
-      }
-    ]
-  },
-  {
     "label": "\ud83d\udccc Pin latest",
     "icon": "",
     "style": "default",

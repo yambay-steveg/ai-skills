@@ -210,7 +210,7 @@ def ensure_primary_folder(fm):
     print(f"  created activity folder {prim}")
 
 
-def build_workspace(card_path, fm, sid, dangerous=False):
+def build_workspace(card_path, fm, sid):
     paths = [expand(p) for p in (fm.get("paths") or [])]
 
     # When resuming, ensure the session's origin folder is in the workspace, else the
@@ -232,8 +232,7 @@ def build_workspace(card_path, fm, sid, dangerous=False):
 
     # Bypass is always AVAILABLE in the mode selector (armed), but no session is forced
     # into it — each tab dials up/down. Mirrors the User-settings arm; also works on
-    # machines without it. `dangerous` is a deprecated no-op, retained for compatibility
-    # until the board stops sending -d (slice 9b), then removed.
+    # machines without it.
     settings["claudeCode.allowDangerouslySkipPermissions"] = True
 
     CACHE.mkdir(parents=True, exist_ok=True)
@@ -364,7 +363,7 @@ def cmd_launch(args):
     fm, _ = read_card(args.card)
     ensure_primary_folder(fm)  # GUI-created card with no folder yet → create it, then launch
     sid, mode = resolve_session(fm, args)
-    ws, folders = build_workspace(args.card, fm, sid, dangerous=args.dangerous)
+    ws, folders = build_workspace(args.card, fm, sid)
 
     print(f"opening {len(folders)} folder(s):")
     for p in folders:
@@ -1709,9 +1708,6 @@ def main():
                     help="start a fresh session (ignore pin / latest)")
     pl.add_argument("--pick", action="store_true",
                     help="choose from the card's recent sessions (terminal only)")
-    pl.add_argument("-d", "--dangerous", action="store_true",
-                    help="deprecated no-op (bypass is always armed, never forced); "
-                         "kept until the board stops sending it (slice 9b)")
     pl.add_argument("--delay", type=float, default=3.0,
                     help="seconds to wait after launching VSCode before firing the URI")
     pl.set_defaults(func=cmd_launch)
