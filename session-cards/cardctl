@@ -1426,7 +1426,8 @@ def slug_from_window_title(title):
 
 def stem_to_card():
     """Map {card filename stem: card filepath} across every CARDS_DIRS folder — for
-    resolving a window's slug back to its card file."""
+    resolving a window's slug back to its card file. Duplicate stems keep the first
+    domain's card; `lint` surfaces those as CARD-STEM-COLLISION."""
     out = {}
     for cd in CARDS_DIRS.values():
         if Path(cd).is_dir():
@@ -1806,6 +1807,22 @@ def cmd_lint(args):
                 findings.append(_finding("(vault)", "BASENAME-COLLISION", "error",
                     f"basename '{stem}' shared by {len(paths)} notes: {rels}",
                     source=vr_source.get(vr, "")))
+
+    # CARD-STEM-COLLISION — the same card filename stem in more than one domain's
+    # Cards/ folder. `stem_to_card()` (window↔card mapping for `windows`/`focus`)
+    # keeps the FIRST match, so a work/personal slug collision silently mis-targets
+    # every card after the first. Scanned across all domains, like BASENAME-COLLISION.
+    stem_domains = {}
+    for source, cd in CARDS_DIRS.items():
+        if Path(cd).is_dir():
+            for c in sorted(Path(cd).glob("*.md")):
+                stem_domains.setdefault(c.stem, []).append(source)
+    for stem, sources in sorted(stem_domains.items()):
+        if len(sources) > 1:
+            findings.append(_finding("(cards)", "CARD-STEM-COLLISION", "error",
+                f"card stem '{stem}' exists in {len(sources)} domains "
+                f"({', '.join(sources)}) — windows/focus resolve the first match "
+                f"({sources[0]}); rename one card to keep window mapping unambiguous"))
 
     findings.sort(key=lambda f: (LINT_SEVERITY_RANK.get(f["severity"], 9),
                                  f["source"], f["code"], f["card"]))

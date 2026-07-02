@@ -1835,6 +1835,32 @@ def test_lint_dangling_link_and_basename_collision(cc, tmp_path, monkeypatch, ca
     assert any(code == "BASENAME-COLLISION" for code, _ in found)
 
 
+def test_lint_card_stem_collision_across_domains(cc, tmp_path, monkeypatch, capsys):
+    work = tmp_path / "work-vault" / "Cards"
+    personal = tmp_path / "personal-vault" / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": work, "personal": personal})
+    make_card(work, "dup")
+    make_card(personal, "dup")
+    make_card(work, "unique")
+    cc.cmd_lint(_lint_ns())
+    fs = [f for f in json.loads(capsys.readouterr().out)
+          if f["code"] == "CARD-STEM-COLLISION"]
+    assert len(fs) == 1 and fs[0]["severity"] == "error"
+    d = fs[0]["detail"]
+    assert "'dup'" in d and "work" in d and "personal" in d
+    assert "'unique'" not in d
+
+
+def test_lint_no_card_stem_collision_when_stems_distinct(cc, tmp_path, monkeypatch, capsys):
+    work = tmp_path / "work-vault" / "Cards"
+    personal = tmp_path / "personal-vault" / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": work, "personal": personal})
+    make_card(work, "one")
+    make_card(personal, "two")
+    found = _findings(cc, tmp_path, capsys)
+    assert not any(code == "CARD-STEM-COLLISION" for code, _ in found)
+
+
 def test_lint_standing_language_is_heuristic(cc, tmp_path, monkeypatch, capsys):
     cards = tmp_path / "Cards"
     monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
