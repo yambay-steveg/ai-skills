@@ -1400,6 +1400,44 @@ def test_new_path_entries_appended_after_activity_and_not_created(cc, tmp_path, 
     assert not missing.exists()                     # --path entries are never created
 
 
+def test_new_path_naming_auto_folder_yields_single_entry(cc, tmp_path, monkeypatch):
+    # #39: --path pointing at the slug's own auto-created activity folder must not
+    # write it into paths twice (a duplicate entry breaks the board fly-out downstream).
+    cards, active = _wire_new(cc, tmp_path, monkeypatch)
+    cc.cmd_new(_new_ns("selfie", path=[str(active / "selfie")]))
+    fm, _ = cc.read_card(str(cards / "selfie.md"))
+    assert fm["paths"] == [str(active / "selfie")]
+
+
+def test_new_path_naming_auto_folder_deduped_path_normalised(cc, tmp_path, monkeypatch):
+    # The compare is path-normalised — a non-canonical spelling of the activity
+    # folder (here via `..`) still collapses to the one entry.
+    cards, active = _wire_new(cc, tmp_path, monkeypatch)
+    roundabout = str(active / "twisty" / ".." / "twisty")
+    cc.cmd_new(_new_ns("twisty", path=[roundabout]))
+    fm, _ = cc.read_card(str(cards / "twisty.md"))
+    assert fm["paths"] == [str(active / "twisty")]
+
+
+def test_new_repeated_path_values_deduped(cc, tmp_path, monkeypatch):
+    cards, active = _wire_new(cc, tmp_path, monkeypatch)
+    existing = tmp_path / "monorepo"
+    existing.mkdir()
+    cc.cmd_new(_new_ns("echoey", path=[str(existing), str(existing)]))
+    fm, _ = cc.read_card(str(cards / "echoey.md"))
+    assert fm["paths"] == [str(active / "echoey"), str(existing)]
+
+
+def test_new_distinct_paths_survive_dedupe_in_order(cc, tmp_path, monkeypatch):
+    cards, active = _wire_new(cc, tmp_path, monkeypatch)
+    a = tmp_path / "repo-a"
+    b = tmp_path / "repo-b"
+    a.mkdir(); b.mkdir()
+    cc.cmd_new(_new_ns("varied", path=[str(a), str(b)]))
+    fm, _ = cc.read_card(str(cards / "varied.md"))
+    assert fm["paths"] == [str(active / "varied"), str(a), str(b)]
+
+
 def test_new_no_folder_skips_auto_activity_folder(cc, tmp_path, monkeypatch):
     cards, active = _wire_new(cc, tmp_path, monkeypatch)
     existing = tmp_path / "repo-only"

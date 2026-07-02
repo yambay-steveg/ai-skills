@@ -737,6 +737,18 @@ def cmd_new(args):
         paths.append(str(prim))
     paths += extra
 
+    # --path may repeat a folder or name the auto-created one (#39) — keep each folder
+    # once, compared path-normalised; first occurrence wins so the activity folder
+    # stays primary.
+    seen = set()
+    unique = []
+    for p in paths:
+        key = expand(p)
+        if key not in seen:
+            seen.add(key)
+            unique.append(p)
+    paths = unique
+
     # --path entries are additional existing folders; warn (don't create) if missing.
     for p in extra:
         if not Path(p).is_dir():
