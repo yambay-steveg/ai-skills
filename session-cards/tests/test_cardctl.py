@@ -798,6 +798,201 @@ def test_delete_refuses_non_archived(cc, tmp_path, monkeypatch):
     assert card.exists()
 
 
+# ── slice 3: atomicity (preflight, frontmatter-last, containment, scoped staging) ──
+def _archive_prefix():
+    import datetime
+    return datetime.date.today().strftime("%Y-%m-")
+
+
+def _head(repo):
+    return _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def test_archive_dies_on_destination_collision_tracked(cc, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cc, "PROJECTS", tmp_path / "projects")
+    repo, folder = _git_repo_with_folder(tmp_path, "active", "thing")
+    target = repo / "archive" / f"{_archive_prefix()}thing"
+    target.mkdir(parents=True)                    # collision
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "thing", status="in-progress", paths=[str(folder)])
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    head = _head(repo)
+
+    with pytest.raises(SystemExit):
+        cc.cmd_archive(NS(card=str(card), json=False))
+    assert "already exists" in capsys.readouterr().err
+    # no mutation: folder in place (not nested into target), frontmatter untouched, no commit
+    assert folder.is_dir() and not (target / "thing").exists()
+    fm, _ = cc.read_card(str(card))
+    assert fm["status"] == "in-progress" and "archivedAt" not in fm
+    assert _head(repo) == head
+
+
+def test_archive_dies_on_destination_collision_untracked(cc, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cc, "PROJECTS", tmp_path / "projects")
+    repo, _ = _git_repo_with_folder(tmp_path, "active", "other")
+    loose = repo / "active" / "loose"             # never committed
+    loose.mkdir(parents=True)
+    (loose / "notes.md").write_text("draft\n")
+    target = repo / "archive" / f"{_archive_prefix()}loose"
+    target.mkdir(parents=True)                    # collision
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "loose", status="in-progress", paths=[str(loose)])
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    head = _head(repo)
+
+    with pytest.raises(SystemExit):
+        cc.cmd_archive(NS(card=str(card), json=False))
+    assert "already exists" in capsys.readouterr().err
+    # the old mv fallback would have NESTED loose inside the existing target
+    assert loose.is_dir() and not (target / "loose").exists()
+    fm, _ = cc.read_card(str(card))
+    assert fm["status"] == "in-progress" and "archivedAt" not in fm
+    assert _head(repo) == head
+
+
+def test_archive_dies_when_repo_is_not_git(cc, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cc, "PROJECTS", tmp_path / "projects")
+    folder = _active_folder(tmp_path, "nogit")    # plain dir, no git init
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "nogit", status="in-progress", paths=[str(folder)])
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    with pytest.raises(SystemExit):
+        cc.cmd_archive(NS(card=str(card), json=False))
+    assert "not a git repository" in capsys.readouterr().err
+    assert folder.is_dir()
+    fm, _ = cc.read_card(str(card))
+    assert fm["status"] == "in-progress" and "archivedAt" not in fm
+
+
+def test_archive_frontmatter_last_on_move_failure(cc, tmp_path, monkeypatch, capsys):
+    import subprocess
+    monkeypatch.setattr(cc, "PROJECTS", tmp_path / "projects")
+    repo, folder = _git_repo_with_folder(tmp_path, "active", "thing")
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "thing", status="in-progress", paths=[str(folder)])
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+
+    def boom(*a, **kw):
+        raise subprocess.CalledProcessError(128, ["git", "mv", "x", "y"])
+    monkeypatch.setattr(cc, "_move_card_folder", boom)
+
+    with pytest.raises(SystemExit):
+        cc.cmd_archive(NS(card=str(card), json=False))
+    err = capsys.readouterr().err
+    assert "git" in err and "exit 128" in err            # names the failing step
+    assert "completed so far" in err                     # residual state reported
+    assert "NOT updated" in err
+    fm, _ = cc.read_card(str(card))
+    assert fm["status"] == "in-progress" and "archivedAt" not in fm
+
+
+def test_reinstate_frontmatter_last_on_move_failure(cc, tmp_path, monkeypatch, capsys):
+    import subprocess
+    monkeypatch.setattr(cc, "PROJECTS", tmp_path / "projects")
+    repo, arch_folder = _git_repo_with_folder(tmp_path, "archive", "2026-06-thing")
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "thing", status="archived", paths=[str(arch_folder)])
+    card.write_text(card.read_text().replace(
+        "status: archived\n", "status: archived\narchivedAt: 2026-06-30T09:20:14+08:00\n"))
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+
+    def boom(*a, **kw):
+        raise subprocess.CalledProcessError(1, ["git", "mv"])
+    monkeypatch.setattr(cc, "_move_card_folder", boom)
+
+    with pytest.raises(SystemExit):
+        cc.cmd_reinstate(NS(card=str(card), json=False))
+    assert "still archived" in capsys.readouterr().err
+    fm, _ = cc.read_card(str(card))
+    assert fm["status"] == "archived" and fm["archivedAt"]   # untouched
+
+
+def test_archive_untracked_folder_uses_move_plus_add_fallback(cc, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cc, "PROJECTS", tmp_path / "projects")
+    repo, _ = _git_repo_with_folder(tmp_path, "active", "other")
+    loose = repo / "active" / "loose"             # never committed → git mv fails
+    loose.mkdir(parents=True)
+    (loose / "notes.md").write_text("draft\n")
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "loose", status="in-progress", paths=[str(loose)])
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+
+    cc.cmd_archive(NS(card=str(card), json=True))
+    out = json.loads(capsys.readouterr().out)
+    target = repo / "archive" / f"{_archive_prefix()}loose"
+    assert out["moved"][0]["to"] == str(target)
+    assert target.is_dir() and not loose.exists()
+    committed = _git(repo, "show", "--name-only", "--format=%s", "HEAD").stdout
+    assert "Archive: loose" in committed and "notes.md" in committed
+
+
+def test_delete_untracked_fallback_stages_only_deleted_path(cc, tmp_path, monkeypatch, capsys):
+    """git rm refuses a folder with local modifications → fallback path. The scoped
+    `git add -A -- <rel>` must not sweep unrelated dirty files into the commit."""
+    monkeypatch.setattr(cc, "PROJECTS", tmp_path / "projects")
+    repo, arch_folder = _git_repo_with_folder(tmp_path, "archive", "2026-06-thing")
+    unrelated = repo / "unrelated.md"
+    unrelated.write_text("tracked\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add unrelated")
+    (arch_folder / "README.md").write_text("modified\n")   # makes git rm refuse
+    unrelated.write_text("dirty edit — must NOT ride into the Delete commit\n")
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "thing", status="archived", paths=[str(arch_folder)])
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+
+    cc.cmd_delete(NS(card=str(card), confirm="thing", json=True))
+    out = json.loads(capsys.readouterr().out)
+    assert out["deleted"] == [str(arch_folder)]
+    assert not arch_folder.exists() and not card.exists()
+    committed = _git(repo, "show", "--name-only", "--format=%s", "HEAD").stdout
+    assert "Delete: 2026-06-thing" in committed
+    assert "unrelated.md" not in committed
+    assert unrelated.read_text().startswith("dirty edit")  # still dirty on disk
+
+
+def test_delete_fully_untracked_folder_skips_empty_commit(cc, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cc, "PROJECTS", tmp_path / "projects")
+    repo, _ = _git_repo_with_folder(tmp_path, "archive", "2026-06-other")
+    loose = repo / "archive" / "2026-06-loose"    # never committed
+    loose.mkdir(parents=True)
+    (loose / "notes.md").write_text("draft\n")
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "loose", status="archived", paths=[str(loose)])
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    head = _head(repo)
+
+    cc.cmd_delete(NS(card=str(card), confirm="loose", json=True))
+    out = json.loads(capsys.readouterr().out)
+    assert out["deleted"] == [str(loose)]
+    assert not loose.exists() and not card.exists()
+    assert _head(repo) == head                    # nothing to commit → no commit
+
+
+def test_reconcile_collision_skips_and_batch_continues(cc, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cc, "PROJECTS", tmp_path / "projects")
+    repo, f_a = _git_repo_with_folder(tmp_path, "active", "aaa")
+    f_b = repo / "active" / "bbb"
+    f_b.mkdir(parents=True)
+    (f_b / "README.md").write_text("# bbb\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add bbb")
+    prefix = _archive_prefix()
+    (repo / "archive" / f"{prefix}aaa").mkdir(parents=True)   # collision for aaa only
+    cards = tmp_path / "Cards"
+    make_card(cards, "aaa", status="archived", paths=[str(f_a)])
+    make_card(cards, "bbb", status="archived", paths=[str(f_b)])
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+
+    cc.cmd_reconcile(NS(apply=True))
+    out = capsys.readouterr().out
+    assert f"SKIP (destination exists): {repo / 'archive' / (prefix + 'aaa')}" in out
+    assert f_a.is_dir()                                       # aaa left alone
+    assert not f_b.exists()                                   # bbb still filed
+    assert (repo / "archive" / f"{prefix}bbb").is_dir()
+
+
 # ── build_workspace: window.title injection ───────────────────────────────────
 def test_build_workspace_injects_window_title(cc, tmp_path, monkeypatch):
     monkeypatch.setattr(cc, "CACHE", tmp_path / "cache")
