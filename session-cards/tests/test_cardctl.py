@@ -704,20 +704,33 @@ def test_build_workspace_injects_window_title(cc, tmp_path, monkeypatch):
     ws, folders = cc.build_workspace(str(card), {"title": "My Card", "paths": [str(folder)]}, None)
     settings = json.loads(ws.read_text())["settings"]
     assert settings["window.title"] == "My Card — ${rootName}"
-    assert "claudeCode.allowDangerouslySkipPermissions" not in settings
 
 
-def test_build_workspace_dangerous_preserves_window_title(cc, tmp_path, monkeypatch):
+# ── build_workspace: bypass is always armed, never forced (slice 9a) ──────────
+def test_build_workspace_always_arms_never_forces(cc, tmp_path, monkeypatch):
+    monkeypatch.setattr(cc, "CACHE", tmp_path / "cache")
     folder = tmp_path / "act"
     folder.mkdir()
     card = make_card(tmp_path / "Cards", "demo", title="My Card", paths=[str(folder)])
+    for dangerous in (False, True):
+        ws, _ = cc.build_workspace(str(card), {"title": "My Card", "paths": [str(folder)]},
+                                   None, dangerous=dangerous)
+        settings = json.loads(ws.read_text())["settings"]
+        assert settings["claudeCode.allowDangerouslySkipPermissions"] is True
+        assert "claudeCode.initialPermissionMode" not in settings
+
+
+def test_build_workspace_dangerous_flag_is_noop(cc, tmp_path, monkeypatch):
     monkeypatch.setattr(cc, "CACHE", tmp_path / "cache")
-    ws, _ = cc.build_workspace(str(card), {"title": "My Card", "paths": [str(folder)]},
-                               None, dangerous=True)
-    settings = json.loads(ws.read_text())["settings"]
-    assert settings["window.title"] == "My Card — ${rootName}"
-    assert settings["claudeCode.allowDangerouslySkipPermissions"] is True
-    assert settings["claudeCode.initialPermissionMode"] == "bypassPermissions"
+    folder = tmp_path / "act"
+    folder.mkdir()
+    card = make_card(tmp_path / "Cards", "demo", title="My Card", paths=[str(folder)])
+    fm = {"title": "My Card", "paths": [str(folder)]}
+    ws_off, _ = cc.build_workspace(str(card), fm, None, dangerous=False)
+    settings_off = json.loads(ws_off.read_text())["settings"]
+    ws_on, _ = cc.build_workspace(str(card), fm, None, dangerous=True)
+    settings_on = json.loads(ws_on.read_text())["settings"]
+    assert settings_off == settings_on
 
 
 # ── focus (osascript mocked; no real windows) ─────────────────────────────────

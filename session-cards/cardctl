@@ -84,7 +84,7 @@ ACTIVE_ROOTS = {
     "personal": Path.home() / "Source/personal/ai-tasks/active",
 }
 BUTTON_BAR = ("`BUTTON[launch-card]` `BUTTON[new-session]` "
-              "`BUTTON[launch-dangerous]` `BUTTON[pin-session]`")
+              "`BUTTON[pin-session]`")
 
 # The card lifecycle vocabulary. `set-status` accepts only these; `reconcile`
 # keys off `archived`. Surfaces (e.g. the board) must change status through
@@ -226,17 +226,15 @@ def build_workspace(card_path, fm, sid, dangerous=False):
 
     # window.title makes each generated window identifiable by its card, so `focus`
     # (and launch's window-raise) can target the right one — VS Code's resume URI has
-    # no window-targeting param. Merge, don't overwrite, so --dangerous settings survive.
+    # no window-targeting param.
     title = unquote(fm.get("title") or Path(card_path).stem)
     settings = {"window.title": f"{title} — ${{rootName}}"}
 
-    # --dangerous: workspace-scoped settings so the Claude extension starts in
-    # bypassPermissions mode for THIS window only (regenerated each launch).
-    if dangerous:
-        settings.update({
-            "claudeCode.allowDangerouslySkipPermissions": True,
-            "claudeCode.initialPermissionMode": "bypassPermissions",
-        })
+    # Bypass is always AVAILABLE in the mode selector (armed), but no session is forced
+    # into it — each tab dials up/down. Mirrors the User-settings arm; also works on
+    # machines without it. `dangerous` is a deprecated no-op, retained for compatibility
+    # until the board stops sending -d (slice 9b), then removed.
+    settings["claudeCode.allowDangerouslySkipPermissions"] = True
 
     CACHE.mkdir(parents=True, exist_ok=True)
     ws = CACHE / f"{Path(card_path).stem}.code-workspace"
@@ -368,7 +366,7 @@ def cmd_launch(args):
     sid, mode = resolve_session(fm, args)
     ws, folders = build_workspace(args.card, fm, sid, dangerous=args.dangerous)
 
-    print(f"opening {len(folders)} folder(s){' [DANGEROUS: bypassPermissions]' if args.dangerous else ''}:")
+    print(f"opening {len(folders)} folder(s):")
     for p in folders:
         print(f"  - {p}")
     subprocess.run([CODE, str(ws)], check=True)
@@ -1712,7 +1710,8 @@ def main():
     pl.add_argument("--pick", action="store_true",
                     help="choose from the card's recent sessions (terminal only)")
     pl.add_argument("-d", "--dangerous", action="store_true",
-                    help="start the session in bypassPermissions mode (skip approvals)")
+                    help="deprecated no-op (bypass is always armed, never forced); "
+                         "kept until the board stops sending it (slice 9b)")
     pl.add_argument("--delay", type=float, default=3.0,
                     help="seconds to wait after launching VSCode before firing the URI")
     pl.set_defaults(func=cmd_launch)
