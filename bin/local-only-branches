@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""
+local-only-branches — read-only audit of local git branches that have no
+matching branch on origin.
+
+For each such branch it reports:
+  - AGE     : date of the branch's earliest commit not on origin/main
+              (i.e. how old the unique work is), oldest first
+  - PR      : the highest-numbered PR whose head is this branch, its state,
+              and its merged-or-created date (AWST). Looked up per-branch via
+              `gh pr list --head`, which filters server-side (no result cap).
+  - UNPUSHED: commits on the branch tip not reachable from ANY origin ref.
+              For a squash-merged PR this is normally > 0 and is SAFE — the
+              content is on main under a new commit.
+  - WORKTREE: if checked out, the count of uncommitted files to preserve
+
+Performs NO writes and touches nothing on the remote. Safe to rerun anytime.
+
+Usage:  local-only-branches [repo-path]   (defaults to current directory)
+"""
+import subprocess, json, datetime, sys, os, re
+from concurrent.futures import ThreadPoolExecutor
+
+REPO = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.getcwd()
+AWST = datetime.timezone(datetime.timedelta(hours=8))
+
+
+def sh(*a):
+    r = subprocess.run(a, capture_output=True, text=True, cwd=REPO)
+    return r.stdout.strip()
+
+
+def owner_repo():
+    """Derive owner/repo from origin, tolerating SSH host aliases (github.com-work)."""
+    url = sh("git", "remote", "get-url", "origin")
+    m = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?$", url)
+    if not m:
+        sys.exit(f"could not parse owner/repo from origin url: {url}")
+    return m.group(1)
+
+
+def to_awst(iso):
+    if not iso:
+        return ""
+    dt = datetime.datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(AWST)
+    return dt.strftime("%Y-%m-%d")
+
+
+def main():
+    repo = owner_repo()
+
+    local = sh("git", "for-each-ref", "--format=%(refname:short)", "refs/heads/").splitlines()
+    remote = set()
+    for line in sh("git", "ls-remote", "--heads", "origin").splitlines():
+        if "refs/heads/" in line:
+            remote.add(line.split("refs/heads/")[1])
+    branches = [b for b in local if b not in remote]
+    if not branches:
+        print("No local-only branches — every local branch has a match on origin.")
+        return
+
+    # worktree -> branch map (for uncommitted-file counts)
+    wt, cur = {}, None
+    for line in sh("git", "worktree", "list", "--porcelain").splitlines():
+        if line.startswith("worktree "):
+            cur = line.split(" ", 1)[1]
+        elif line.startswith("branch "):
+            wt[line.split("refs/heads/")[1]] = cur
+
+    # Age = earliest commit on the branch not on origin/main; fall back to tip date.
+    def age(b):
+        d = sh("git", "log", "--reverse", "--format=%aI", f"origin/main..{b}").splitlines()
+        if d:
+            return d[0]
+        return sh("git", "log", "-1", "--format=%aI", b)
+
+    ages = {b: age(b) for b in branches}
+    branches.sort(key=lambda b: ages[b] or "")  # oldest first
+
+    # PR lookup is per-branch via `gh pr list --head <branch>`: the API filters
+    # by head ref server-side, so each query returns only that branch's PRs.
+    # No repo-wide fetch, so no 1000-result cap to worry about.
+    def pr_for(b):
+        cand = json.loads(sh("gh", "pr", "list", "--repo", repo, "--head", b,
+                             "--state", "all", "--json",
+                             "number,state,createdAt,mergedAt") or "[]")
+        if not cand:
+            return "(no PR)"
+        p = sorted(cand, key=lambda x: x["number"])[-1]
+        return f"#{p['number']} {p['state'].lower()} {to_awst(p.get('mergedAt') or p.get('createdAt'))}"
+
+    def build_row(b):
+        pr = pr_for(b)
+        unp = sh("git", "rev-list", b, "--not", "--remotes=origin", "--count")
+        path = wt.get(b)
+        if path:
+            dirty = len(sh("git", "-C", path, "status", "--porcelain").splitlines())
+            wi = f"checked out, {dirty} uncommitted"
+        else:
+            wi = "-"
+        return (to_awst(ages[b]), b, pr, unp, wi)
+
+    # The per-branch `gh` call is network-bound, so run the branches concurrently.
+    # branches is already sorted oldest-first; executor.map preserves that order.
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        rows = list(ex.map(build_row, branches))
+
+    print(f"Local-only branches in {repo}: {len(rows)} (oldest first)\n")
+    print(f"{'AGE':11} | {'BRANCH':48} | {'PR (state, date)':26} | {'UNPUSHED':8} | WORKTREE")
+    print("-" * 125)
+    for aged, b, pr, unp, wi in rows:
+        print(f"{aged:11} | {b:48} | {pr:26} | {unp:8} | {wi}")
+
+
+if __name__ == "__main__":
+    main()
