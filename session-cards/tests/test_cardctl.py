@@ -163,6 +163,7 @@ def test_link_pins_and_logs(cc, tmp_path, monkeypatch):
     projects = tmp_path / "projects"
     monkeypatch.setattr(cc, "PROJECTS", projects)
     cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
     folder = tmp_path / "active" / "x"
     folder.mkdir(parents=True)
     card = make_card(cards, "x-card", paths=[str(folder)])
@@ -178,6 +179,7 @@ def test_link_repins_keeps_old_in_history_no_dup(cc, tmp_path, monkeypatch):
     projects = tmp_path / "projects"
     monkeypatch.setattr(cc, "PROJECTS", projects)
     cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
     folder = tmp_path / "active" / "x"
     folder.mkdir(parents=True)
     old = fake_transcript(projects, str(folder))
@@ -197,9 +199,30 @@ def test_link_repins_keeps_old_in_history_no_dup(cc, tmp_path, monkeypatch):
 def test_link_explicit_session_id(cc, tmp_path, monkeypatch):
     monkeypatch.setattr(cc, "PROJECTS", tmp_path / "projects")
     cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
     card = make_card(cards, "x-card", paths=[str(tmp_path / "active" / "x")])
     cc.cmd_link(NS(card=str(card), session="dead-beef", current=False, cwd=None, force=False))
     assert "sessionId: dead-beef" in card.read_text()
+
+
+def test_link_refuses_markdown_outside_cards_dirs(cc, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cc, "PROJECTS", tmp_path / "projects")
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": tmp_path / "Cards"})
+    loose = tmp_path / "loose.md"
+    loose.write_text("---\ntitle: T\nstatus: backlog\n---\nbody\n")
+    before = loose.read_text()
+    with pytest.raises(SystemExit):
+        cc.cmd_link(NS(card=str(loose), session="dead-beef", current=False, cwd=None, force=False))
+    assert "not inside a configured Cards/ folder" in capsys.readouterr().err
+    assert loose.read_text() == before  # untouched
+
+
+def test_link_refuses_missing_card(cc, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": tmp_path / "Cards"})
+    with pytest.raises(SystemExit):
+        cc.cmd_link(NS(card=str(tmp_path / "Cards" / "ghost.md"),
+                       session="dead-beef", current=False, cwd=None, force=False))
+    assert "no such card" in capsys.readouterr().err
 
 
 # ── reconcile (dry-run; archived-only; shared-folder skip) ───────────────────────
@@ -358,6 +381,17 @@ def test_set_status_refuses_card_outside_cards_dirs(cc, tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         cc.cmd_set_status(NS(card=str(outside), status="done"))
     assert "status: backlog" in outside.read_text()  # untouched
+
+
+def test_set_status_rejects_archived(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "demo", status="in-progress")
+    before = card.read_text()
+    with pytest.raises(SystemExit):
+        cc.cmd_set_status(NS(card=str(card), status="archived"))
+    assert "cardctl archive" in capsys.readouterr().err  # message points at the real command
+    assert card.read_text() == before  # frontmatter untouched
 
 
 def test_set_status_noop_when_already_set(cc, tmp_path, monkeypatch, capsys):
@@ -1022,6 +1056,80 @@ def test_new_domain_selects_active_root(cc, tmp_path, monkeypatch):
     fm, _ = cc.read_card(str(tmp_path / "p" / "Cards" / "pcard.md"))
     assert fm["paths"][0] == str(p_active / "pcard")
     assert (p_active / "pcard").is_dir()
+
+
+# ── new (input validation) ─────────────────────────────────────────────────────
+@pytest.mark.parametrize("slug", ["../x", "Foo Bar", "foo/bar", "foo_bar", "-lead", "trail-", ""])
+def test_new_rejects_bad_slug(cc, tmp_path, monkeypatch, slug, capsys):
+    cards, active = _wire_new(cc, tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        cc.cmd_new(_new_ns(slug))
+    assert "invalid slug" in capsys.readouterr().err
+    assert not cards.exists()  # nothing created anywhere
+
+
+def test_new_good_slug_still_creates(cc, tmp_path, monkeypatch):
+    cards, active = _wire_new(cc, tmp_path, monkeypatch)
+    cc.cmd_new(_new_ns("good-slug-2"))
+    assert (cards / "good-slug-2.md").is_file()
+
+
+def test_new_rejects_bad_status(cc, tmp_path, monkeypatch, capsys):
+    cards, active = _wire_new(cc, tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        cc.cmd_new(_new_ns("a-card", status="blocked"))
+    assert "invalid status" in capsys.readouterr().err
+
+
+def test_new_rejects_bad_type(cc, tmp_path, monkeypatch, capsys):
+    cards, active = _wire_new(cc, tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        cc.cmd_new(_new_ns("a-card", type="epic"))
+    assert "invalid type" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("card_type", ["project", "program", "bug", "idea", "decision"])
+def test_new_accepts_all_card_types(cc, tmp_path, monkeypatch, card_type):
+    cards, active = _wire_new(cc, tmp_path, monkeypatch)
+    cc.cmd_new(_new_ns(f"typed-{card_type}", type=card_type))
+    fm, _ = cc.read_card(str(cards / f"typed-{card_type}.md"))
+    assert fm["type"] == card_type
+
+
+@pytest.mark.parametrize("area", ["tools", "area/tools"])
+def test_new_normalises_area_tag(cc, tmp_path, monkeypatch, area):
+    cards, active = _wire_new(cc, tmp_path, monkeypatch)
+    cc.cmd_new(_new_ns("area-card", area=area))
+    fm, _ = cc.read_card(str(cards / "area-card.md"))
+    assert fm["tags"] == ["area/tools"]
+
+
+def test_new_rejects_malformed_area(cc, tmp_path, monkeypatch, capsys):
+    cards, active = _wire_new(cc, tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        cc.cmd_new(_new_ns("a-card", area="area/Bad Slug"))
+    assert "invalid --area" in capsys.readouterr().err
+
+
+def test_new_force_recreate_passes_validation(cc, tmp_path, monkeypatch):
+    cards, active = _wire_new(cc, tmp_path, monkeypatch)
+    cc.cmd_new(_new_ns("re-card", area="tools"))
+    cc.cmd_new(_new_ns("re-card", area="area/tools", force=True))  # --force re-create still validates + succeeds
+    fm, _ = cc.read_card(str(cards / "re-card.md"))
+    assert fm["tags"] == ["area/tools"]
+
+
+# ── launch (archived refusal) ───────────────────────────────────────────────────
+def test_launch_refuses_archived_card_before_any_subprocess(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "old-card", status="archived")
+
+    def boom(*a, **kw):
+        raise AssertionError("subprocess.run must not be reached for an archived card")
+    monkeypatch.setattr(cc.subprocess, "run", boom)
+    with pytest.raises(SystemExit):
+        cc.cmd_launch(NS(card=str(card), new=False, pick=False, delay=0.0, session=None))
+    assert "cardctl reinstate" in capsys.readouterr().err
 
 
 # ── set: the metadata writer ────────────────────────────────────────────────────

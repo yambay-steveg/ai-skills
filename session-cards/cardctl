@@ -91,6 +91,10 @@ BUTTON_BAR = ("`BUTTON[launch-card]` `BUTTON[new-session]` "
 # cardctl, not by writing the file, so this stays the single source of truth.
 CARD_STATUSES = ["backlog", "in-progress", "on-hold", "done", "archived"]
 
+# Card `type` vocabulary (schema comment above): project | program, plus the
+# optional bug | idea | decision kinds already in use on existing cards.
+CARD_TYPES = ["project", "program", "bug", "idea", "decision"]
+
 
 def die(msg):
     print(f"cardctl: {msg}", file=sys.stderr)
@@ -361,6 +365,8 @@ def activate_vscode():
 
 def cmd_launch(args):
     fm, _ = read_card(args.card)
+    if str(fm.get("status") or "").strip().lower() == "archived":
+        die(f"{args.card}: card is archived — run `cardctl reinstate {args.card}` first")
     ensure_primary_folder(fm)  # GUI-created card with no folder yet → create it, then launch
     sid, mode = resolve_session(fm, args)
     ws, folders = build_workspace(args.card, fm, sid)
@@ -398,6 +404,10 @@ def cmd_link(args):
     history (newest first; an AI fills in 'what it did'). Re-pin freely — the previous pin
     stays logged. Pick the session: `--session <id>` | `--current` (the running session) |
     newest transcript under the card's folder (`--cwd` to point elsewhere)."""
+    if not Path(args.card).is_file():
+        die(f"{args.card}: no such card")
+    if not card_under_cards_dirs(args.card):
+        die(f"{args.card}: not inside a configured Cards/ folder")
     fm, text = read_card(args.card)
 
     if args.session:
@@ -582,10 +592,14 @@ def _live_folder_refs(exclude_card):
 def cmd_set_status(args):
     """Set a card's lifecycle `status` — the one board-owned field cardctl writes on
     demand (R10: surfaces never edit the card file directly; they go through here).
-    Flips the field only; folder moves for `archived` stay with `reconcile`."""
+    Flips the field only; `archived` is rejected — entering it takes `cardctl archive`
+    (folder move + archivedAt), leaving it takes `reinstate`."""
     status = args.status.strip()
     if status not in CARD_STATUSES:
         die(f"invalid status {status!r} (choose: {', '.join(CARD_STATUSES)})")
+    if status == "archived":
+        die("use `cardctl archive <card>` to archive (it moves the folder + stamps archivedAt); "
+            "`set-status archived` would only flip frontmatter")
     if not Path(args.card).is_file():
         die(f"{args.card}: no such card")
     if not card_under_cards_dirs(args.card):
@@ -603,6 +617,17 @@ def cmd_new(args):
     cards = CARDS_DIRS.get(args.domain)
     if cards is None:
         die(f"unknown domain {args.domain!r} (choose: {', '.join(CARDS_DIRS)})")
+    if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", args.slug):
+        die(f"invalid slug {args.slug!r} — kebab-case only (a-z, 0-9, hyphens)")
+    if args.status not in CARD_STATUSES:
+        die(f"invalid status {args.status!r} (choose: {', '.join(CARD_STATUSES)})")
+    if args.type not in CARD_TYPES:
+        die(f"invalid type {args.type!r} (choose: {', '.join(CARD_TYPES)})")
+    if args.area:
+        a = args.area[5:] if args.area.startswith("area/") else args.area
+        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", a):
+            die(f"invalid --area {args.area!r} — expected area/<kebab-slug>")
+        args.area = f"area/{a}"
     cards.mkdir(parents=True, exist_ok=True)
     dest = cards / f"{args.slug}.md"
     if dest.exists() and not args.force:
@@ -1735,7 +1760,8 @@ def main():
     pn.add_argument("--area", help="area/* facet tag, e.g. area/v7")
     pn.add_argument("--program", help="program name → program: \"[[name]]\" link")
     pn.add_argument("--status", default="in-progress")
-    pn.add_argument("--type", default="project", help="project | program (default project)")
+    pn.add_argument("--type", default="project",
+                    help=f"one of: {', '.join(CARD_TYPES)} (default project)")
     pn.add_argument("--domain", default="work", choices=list(CARDS_DIRS))
     pn.add_argument("--make-folder", action="store_true",
                     help="(now default — the activity folder is always auto-created; accepted "
