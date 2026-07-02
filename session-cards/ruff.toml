@@ -1,0 +1,9 @@
+# Ruff config for cardctl (an extension-less Python script) + its tests.
+# Run from this folder:  uvx ruff check .   (or: ruff check, if installed)
+# extend-include picks up the extension-less script during discovery.
+extend-include = ["cardctl"]
+
+[lint]
+# Default rule set (pyflakes + core pycodestyle errors), minus E702: the
+# compact `a; b` one-liner style is deliberate house style in cardctl.
+ignore = ["E702"]

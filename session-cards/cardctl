@@ -154,8 +154,8 @@ def expand(p):
 
 
 def unquote(v):
-    """Strip a single layer of surrounding matching quotes from a scalar (the way
-    `cmd_which` does), leaving unquoted values untouched."""
+    """Strip a single layer of surrounding matching quotes from a scalar, leaving
+    unquoted values untouched."""
     v = str(v).strip()
     return v[1:-1] if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'" else v
 
@@ -207,7 +207,6 @@ def origin_of_session(sid):
                 continue
             if isinstance(rec, dict) and rec.get("cwd"):
                 return rec["cwd"]
-    # fall back to the encoded dir name (lossy, but better than nothing)
     return None
 
 
@@ -1173,7 +1172,7 @@ def cmd_deploy(args):
         vault = VAULT_ROOTS[d]
         print(f"\n{d}  ({vault})")
         if not vault.is_dir():
-            print(f"  skip: vault not found"); continue
+            print("  skip: vault not found"); continue
         for label, dest_rel, kind, src_rel in DEPLOY_SURFACES:
             action = _deploy_surface(vault, dest_rel, kind, src_rel, args.apply)
             any_change |= action in ("create", "update")
@@ -1238,7 +1237,7 @@ def write_card_cache(folder, card_path):
     if readme.is_file():
         text = readme.read_text()
         if CACHE_RE.search(text):
-            kept = [l for l in text.splitlines() if not CACHE_RE.search(l)]
+            kept = [ln for ln in text.splitlines() if not CACHE_RE.search(ln)]
             readme.write_text("\n".join(kept) + ("\n" if text.endswith("\n") else ""))
 
 
@@ -1248,12 +1247,12 @@ def open_actions(folder, limit=6):
     if not readme.is_file():
         return []
     out, in_sec = [], False
-    for l in readme.read_text().splitlines():
-        if l.startswith("## "):
-            in_sec = l.strip().lower().startswith("## open")
+    for ln in readme.read_text().splitlines():
+        if ln.startswith("## "):
+            in_sec = ln.strip().lower().startswith("## open")
             continue
-        if in_sec and l.strip().startswith("- [ ]"):
-            out.append(l.strip())
+        if in_sec and ln.strip().startswith("- [ ]"):
+            out.append(ln.strip())
     return out[:limit]
 
 
@@ -1270,14 +1269,11 @@ def cmd_which(args):
         print(str(card))
         return
     fm, _ = read_card(card)
-    def unq(v):
-        v = str(v).strip()
-        return v[1:-1] if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'" else v
-    print(f"Active card: {unq(fm.get('title', card.stem))}  [{card}]")
+    print(f"Active card: {unquote(fm.get('title', card.stem))}  [{card}]")
     if fm.get("status"):
-        print(f"status: {unq(fm['status'])}")
+        print(f"status: {unquote(fm['status'])}")
     if fm.get("latest"):
-        print(f"latest: {unq(fm['latest'])}")
+        print(f"latest: {unquote(fm['latest'])}")
     acts = open_actions(folder)
     if acts:
         print("open actions:")
@@ -1426,7 +1422,8 @@ def slug_from_window_title(title):
 
 def stem_to_card():
     """Map {card filename stem: card filepath} across every CARDS_DIRS folder — for
-    resolving a window's slug back to its card file."""
+    resolving a window's slug back to its card file. Duplicate stems keep the first
+    domain's card; `lint` surfaces those as CARD-STEM-COLLISION."""
     out = {}
     for cd in CARDS_DIRS.values():
         if Path(cd).is_dir():
@@ -1806,6 +1803,22 @@ def cmd_lint(args):
                 findings.append(_finding("(vault)", "BASENAME-COLLISION", "error",
                     f"basename '{stem}' shared by {len(paths)} notes: {rels}",
                     source=vr_source.get(vr, "")))
+
+    # CARD-STEM-COLLISION — the same card filename stem in more than one domain's
+    # Cards/ folder. `stem_to_card()` (window↔card mapping for `windows`/`focus`)
+    # keeps the FIRST match, so a work/personal slug collision silently mis-targets
+    # every card after the first. Scanned across all domains, like BASENAME-COLLISION.
+    stem_domains = {}
+    for source, cd in CARDS_DIRS.items():
+        if Path(cd).is_dir():
+            for c in sorted(Path(cd).glob("*.md")):
+                stem_domains.setdefault(c.stem, []).append(source)
+    for stem, sources in sorted(stem_domains.items()):
+        if len(sources) > 1:
+            findings.append(_finding("(cards)", "CARD-STEM-COLLISION", "error",
+                f"card stem '{stem}' exists in {len(sources)} domains "
+                f"({', '.join(sources)}) — windows/focus resolve the first match "
+                f"({sources[0]}); rename one card to keep window mapping unambiguous"))
 
     findings.sort(key=lambda f: (LINT_SEVERITY_RANK.get(f["severity"], 9),
                                  f["source"], f["code"], f["card"]))

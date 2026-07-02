@@ -38,7 +38,7 @@ record. (`.card` is gitignored in this repo.)
 
 ## `reconcile` (R9 — card status → disk)
 
-Scans every card in both vault `Cards/` folders; for any with `status: archived` (or `done`)
+Scans every card in both vault `Cards/` folders; for any with `status: archived`
 whose `paths` include an `active/<x>` folder, it **moves that folder to `archive/YYYY-MM-<x>`** in
 its task repo (`git mv` + an `Archive:` commit) and updates the card's path. Cross-repo: card in
 the vault, folder in the task repo. **Dry-run by default** — add `--apply` to perform the moves.
@@ -60,7 +60,9 @@ cardctl lint <card.md> # just that card (basename-collision is still scanned vau
 Checks: `NO-AREA` (no `area/*` tag), `EMPTY-PROGRAM` (no `program:` while same-area siblings have
 one), `DANGLING-LINK` (`program:`/`raised-at:`/`customer:` resolves to no vault note), `BASENAME-COLLISION` (a
 note basename used by ≥2 notes vault-wide — breaks `shortest` link resolution; scaffolding stems
-README/CLAUDE/AGENTS/index are exempt), `LINK-IN-PROSE` (a `[[…]]` buried in `summary:`/`latest:`/
+README/CLAUDE/AGENTS/index are exempt), `CARD-STEM-COLLISION` (the same card filename stem in more
+than one domain's `Cards/` folder — window↔card mapping for `windows`/`focus` keeps the first
+match, so the rest silently mis-target), `LINK-IN-PROSE` (a `[[…]]` buried in `summary:`/`latest:`/
 `title:` instead of a link-property), `BAD-STATUS` (status outside the controlled vocabulary),
 `MISSING-PLANID` (a `plan`-type card with no `planId`), `STALE-PATH` (a `paths:` entry that no
 longer exists on disk), and the `STANDING-LANGUAGE` **heuristic** (ongoing/standing/recurring in

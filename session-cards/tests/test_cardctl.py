@@ -19,7 +19,7 @@ from conftest import NS
 def make_card(cards_dir, slug, *, status="in-progress", paths=(), session=None,
               title="A card", extra_body=""):
     cards_dir.mkdir(parents=True, exist_ok=True)
-    fm = [f"type: project", f"title: {title}", f"status: {status}"]
+    fm = ["type: project", f"title: {title}", f"status: {status}"]
     if session:
         fm.append(f"sessionId: {session}")
     fm.append("paths:")
@@ -1797,7 +1797,7 @@ def _findings(cc, tmp_path, capsys):
 def test_lint_flags_no_area_and_clean_card(cc, tmp_path, monkeypatch, capsys):
     cards = tmp_path / "Cards"
     monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
-    bad = make_card(cards, "noarea")  # no tags → NO-AREA
+    make_card(cards, "noarea")  # no tags → NO-AREA
     good = make_card(cards, "ok")
     good.write_text(good.read_text().replace("status: in-progress",
                                              "status: in-progress\ntags: [area/work-ops]"))
@@ -1833,6 +1833,32 @@ def test_lint_dangling_link_and_basename_collision(cc, tmp_path, monkeypatch, ca
     found = _findings(cc, tmp_path, capsys)
     assert ("DANGLING-LINK", "c.md") in found
     assert any(code == "BASENAME-COLLISION" for code, _ in found)
+
+
+def test_lint_card_stem_collision_across_domains(cc, tmp_path, monkeypatch, capsys):
+    work = tmp_path / "work-vault" / "Cards"
+    personal = tmp_path / "personal-vault" / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": work, "personal": personal})
+    make_card(work, "dup")
+    make_card(personal, "dup")
+    make_card(work, "unique")
+    cc.cmd_lint(_lint_ns())
+    fs = [f for f in json.loads(capsys.readouterr().out)
+          if f["code"] == "CARD-STEM-COLLISION"]
+    assert len(fs) == 1 and fs[0]["severity"] == "error"
+    d = fs[0]["detail"]
+    assert "'dup'" in d and "work" in d and "personal" in d
+    assert "'unique'" not in d
+
+
+def test_lint_no_card_stem_collision_when_stems_distinct(cc, tmp_path, monkeypatch, capsys):
+    work = tmp_path / "work-vault" / "Cards"
+    personal = tmp_path / "personal-vault" / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": work, "personal": personal})
+    make_card(work, "one")
+    make_card(personal, "two")
+    found = _findings(cc, tmp_path, capsys)
+    assert not any(code == "CARD-STEM-COLLISION" for code, _ in found)
 
 
 def test_lint_standing_language_is_heuristic(cc, tmp_path, monkeypatch, capsys):
