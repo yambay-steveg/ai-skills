@@ -21,8 +21,15 @@ session into the wrong instance.
 **Steve's framing:** the launcher tries to find the correct workspace/VSC instance, fails,
 and falls back to applying the change to the window in focus.
 
-**Fix ideas (later):**
-- Ensure/await the new workspace window is frontmost before firing the resume URI (poll via
-  Hammerspoon window enumeration — `hs_code_windows()` already exists).
-- Or open the workspace and only then dispatch the URI with a focus check/retry.
-- Investigate whether VS Code offers any per-window URI routing.
+**Mitigated (2 Jul 2026, slice 4 / ai-skills#23):** `launch` now polls Hammerspoon (up to
+`--delay`s, default 3) until the card's slugged window is open **and frontmost**, raising it
+by window id if it opens without focus, and only then fires the URI. On timeout it exits
+without firing (retry / raise `--delay` / `--no-poll` for the old behaviour); when
+Hammerspoon is unavailable it falls back to the old fixed-delay-then-fire, with a note.
+
+**Residual gap:** the URI itself still has no window-targeting parameter, so this is
+best-effort narrowing, not a full solve — focus can still change in the instant between the
+frontmost check and URI delivery, and the `--no-poll` / hs-unavailable paths keep the
+original race. Per F4 in the concurrent-session operating model, the priority of a full
+solve has dropped: in the one-window-per-card model you mostly open tabs in an existing
+window rather than racing a fresh one.

@@ -378,6 +378,15 @@ def activate_vscode():
         pass  # best-effort focus nudge; never block the launch on it
 
 
+def _fixed_delay_focus(delay):
+    """The pre-polling launch wait: fixed sleep + best-effort app activate. Used when
+    window polling is skipped (--no-poll) or Hammerspoon is unavailable — the URI then
+    fires on hope, so the wrong-window race (#23) is still open on this path."""
+    time.sleep(delay)
+    activate_vscode()       # make the new VS Code window frontmost before the URI
+    time.sleep(0.4)         # let the activation settle so the URI lands on it
+
+
 def cmd_launch(args):
     fm, _ = read_card(args.card)
     if str(fm.get("status") or "").strip().lower() == "archived":
@@ -390,9 +399,24 @@ def cmd_launch(args):
     for p in folders:
         print(f"  - {p}")
     subprocess.run([CODE, str(ws)], check=True)
-    time.sleep(args.delay)
-    activate_vscode()        # make the new VS Code window frontmost before the URI
-    time.sleep(0.4)          # let the activation settle so the URI lands on it
+
+    # The resume URI lands in whichever window is focused (no window-targeting param),
+    # so confirm the card's own window is frontmost before firing it. --no-poll and
+    # hs-unavailable fall back to the old fixed-delay hope.
+    slug = Path(args.card).stem
+    if args.no_poll:
+        _fixed_delay_focus(args.delay)
+    else:
+        try:
+            if not _wait_for_card_window(slug, args.delay):
+                die(f"the '{slug}' window didn't become frontmost within {args.delay:g}s — "
+                    f"no session URI fired (it would land in whichever window has focus). "
+                    f"Retry once the window is up, raise --delay, or use --no-poll for "
+                    f"the old fixed-delay behaviour.")
+        except HsUnavailable as e:
+            print(f"  (Hammerspoon unavailable: {e} — falling back to a fixed "
+                  f"{args.delay:g}s delay; the URI may land in the wrong window)")
+            _fixed_delay_focus(args.delay)
 
     if sid:
         print(f"resuming session {sid}  ({mode})")
@@ -1314,9 +1338,10 @@ def cmd_list(args):
 
 # Lua: collect {id,title} for every window whose app is "Code", as a JSON array.
 _HS_LIST_WINDOWS_LUA = (
+    'local f=hs.window.focusedWindow() local fid=f and f:id() or -1 '
     'local t={} for _,w in ipairs(hs.window.allWindows()) do '
     'local a=w:application() if a and a:name()=="Code" then '
-    't[#t+1]={id=w:id(), title=w:title() or ""} end end '
+    't[#t+1]={id=w:id(), title=w:title() or "", focused=(w:id()==fid)} end end '
     'return hs.json.encode(t)'
 )
 
@@ -1361,7 +1386,9 @@ def _run_hs(lua):
 
 def hs_code_windows():
     """Enumerate open VS Code windows via Hammerspoon. Returns a list of
-    {"id": int, "title": str}. Raises HsUnavailable on any engine failure."""
+    {"id": int, "title": str, "focused": bool} — "focused" is true for the window
+    that currently has system focus (at most one, and only when VS Code is the
+    frontmost app). Raises HsUnavailable on any engine failure."""
     out = _run_hs(_HS_LIST_WINDOWS_LUA)
     try:
         data = json.loads(out) if out else []
@@ -1372,7 +1399,8 @@ def hs_code_windows():
     wins = []
     for w in data:
         if isinstance(w, dict) and "id" in w:
-            wins.append({"id": int(w["id"]), "title": str(w.get("title") or "")})
+            wins.append({"id": int(w["id"]), "title": str(w.get("title") or ""),
+                         "focused": bool(w.get("focused"))})
     return wins
 
 
@@ -1447,6 +1475,26 @@ def _focus_by_id(win_id):
     out = _run_hs(f'local w=hs.window.get({int(win_id)}); '
                   'if w then w:focus(); return "ok" end return "nf"')
     return out == "ok"
+
+
+def _wait_for_card_window(slug, budget):
+    """Poll Hammerspoon until the card's slugged window exists AND has focus, so the
+    resume URI (which lands in whichever window is focused — no window-targeting param)
+    hits the right one. If the window appears without focus, raise it by id and let the
+    next poll confirm. Always polls at least once. Returns True once the window is
+    confirmed frontmost, False when the budget runs out. Raises HsUnavailable if the
+    engine can't be driven (caller falls back to the fixed-delay path)."""
+    deadline = time.monotonic() + budget
+    while True:
+        win = next((w for w in hs_code_windows()
+                    if slug_from_window_title(w["title"]) == slug), None)
+        if win:
+            if win.get("focused"):
+                return True
+            _focus_by_id(win["id"])  # raise it; the next poll confirms focus
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.3)
 
 
 def _focus_by_id_for_card(slug):
@@ -1799,7 +1847,11 @@ def main():
     pl.add_argument("--pick", action="store_true",
                     help="choose from the card's recent sessions (terminal only)")
     pl.add_argument("--delay", type=float, default=3.0,
-                    help="seconds to wait after launching VSCode before firing the URI")
+                    help="seconds to poll for the card's window before giving up "
+                         "(also the fixed wait when polling is unavailable/skipped)")
+    pl.add_argument("--no-poll", action="store_true",
+                    help="skip window polling: wait a fixed --delay, then fire the "
+                         "URI at whichever window has focus (old behaviour)")
     pl.set_defaults(func=cmd_launch)
 
     pk = sub.add_parser("link", help="pin a session into the card (old pin → pastSessions history)")
