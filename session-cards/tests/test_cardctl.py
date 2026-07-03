@@ -1224,6 +1224,7 @@ def test_build_workspace_always_arms_never_forces(cc, tmp_path, monkeypatch):
 
 # ── focus (osascript mocked; no real windows) ─────────────────────────────────
 def test_focus_builds_osascript_with_card_title(cc, tmp_path, monkeypatch, capsys):
+    _no_native(monkeypatch, cc)
     cards = tmp_path / "Cards"
     card = make_card(cards, "demo", title="My Special Card")
     calls = {}
@@ -1250,6 +1251,7 @@ def test_focus_builds_osascript_with_card_title(cc, tmp_path, monkeypatch, capsy
 
 
 def test_focus_failure_is_reported_not_raised(cc, tmp_path, monkeypatch, capsys):
+    _no_native(monkeypatch, cc)
     cards = tmp_path / "Cards"
     card = make_card(cards, "demo", title="My Card")
 
@@ -1317,6 +1319,15 @@ def _fake_hs(monkeypatch, cc, *, stdout="", stderr="", returncode=0, raises=None
     monkeypatch.setattr(cc.subprocess, "run", fake_run)
 
 
+
+def _no_native(monkeypatch, cc):
+    """Disable the zero-spawn fast path (#51) so a test exercises the spawned
+    engines (`code --status` + Hammerspoon)."""
+    def raise_native():
+        raise cc.NativeUnavailable("disabled in test")
+    monkeypatch.setattr(cc, "native_windows", raise_native)
+
+
 def test_hs_code_windows_parses_json(cc, monkeypatch):
     _fake_hs(monkeypatch, cc,
              stdout='[{"id":19146,"title":"X — session-card-board (Workspace)","focused":true}]')
@@ -1373,6 +1384,7 @@ def test_hs_code_windows_raises_on_missing_binary(cc, monkeypatch):
 
 
 def test_windows_json_maps_matched_and_unmatched(cc, tmp_path, monkeypatch, capsys):
+    _no_native(monkeypatch, cc)
     cards = tmp_path / "Cards"
     matched = make_card(cards, "session-card-board", title="Board")
     monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
@@ -1397,6 +1409,7 @@ def test_windows_json_maps_matched_and_unmatched(cc, tmp_path, monkeypatch, caps
 
 
 def test_windows_json_cross_space_window_has_null_id(cc, tmp_path, monkeypatch, capsys):
+    _no_native(monkeypatch, cc)
     # The core of #47: VS Code reports windows on every Mission Control space,
     # Hammerspoon only the current one — off-space windows must still be listed,
     # with id null (nothing for focus-by-id to target).
@@ -1422,6 +1435,7 @@ def test_windows_json_cross_space_window_has_null_id(cc, tmp_path, monkeypatch, 
 
 
 def test_windows_json_id_attaches_by_slug_when_titles_disagree(cc, tmp_path, monkeypatch, capsys):
+    _no_native(monkeypatch, cc)
     # The engines can disagree on the dirty-window suffix ("… — Modified") —
     # the id must still attach via the slug.
     cards = tmp_path / "Cards"
@@ -1439,6 +1453,7 @@ def test_windows_json_id_attaches_by_slug_when_titles_disagree(cc, tmp_path, mon
 
 
 def test_windows_json_degrades_to_hs_when_code_cli_unavailable(cc, tmp_path, monkeypatch, capsys):
+    _no_native(monkeypatch, cc)
     # `code` CLI missing → the Hammerspoon-only (current-space) view, still available.
     cards = tmp_path / "Cards"
     matched = make_card(cards, "session-card-board", title="Board")
@@ -1457,7 +1472,8 @@ def test_windows_json_degrades_to_hs_when_code_cli_unavailable(cc, tmp_path, mon
 
 
 def test_windows_json_engine_unavailable_is_available_false(cc, tmp_path, monkeypatch, capsys):
-    # available:false only when BOTH engines are down.
+    _no_native(monkeypatch, cc)
+    # available:false only when every engine is down.
     monkeypatch.setattr(cc, "CARDS_DIRS", {"work": tmp_path / "Cards"})
     def no_code():
         raise cc.CodeUnavailable("code (VS Code CLI) not found")
@@ -1565,6 +1581,161 @@ def test_run_code_kills_process_group_on_timeout(cc, monkeypatch):
     assert calls["communicate"] == 2           # timed-out wait + post-kill reap
 
 
+# ── native windows (storage.json × CGWindowList — both mocked) ──────────────────
+def test_file_uri_to_path_decodes_and_rejects(cc):
+    assert cc._file_uri_to_path(
+        "file:///Users/steve/.cache/session-cards/my%20card.code-workspace"
+    ) == "/Users/steve/.cache/session-cards/my card.code-workspace"
+    assert cc._file_uri_to_path("vscode-remote://x/y") is None
+    assert cc._file_uri_to_path(None) is None
+
+
+def _write_storage(tmp_path, opened):
+    storage = tmp_path / "storage.json"
+    storage.write_text(json.dumps({"windowsState": {"openedWindows": opened}}))
+    return storage
+
+
+def test_vscode_state_windows_parses_workspace_folder_and_empty(cc, tmp_path, monkeypatch):
+    storage = _write_storage(tmp_path, [
+        {"workspaceIdentifier":
+            {"configURIPath": "file:///Users/x/.cache/session-cards/my-card.code-workspace"},
+         "uiState": {"mode": 1, "x": 71, "y": -1368, "width": 2930, "height": 1368}},
+        {"folder": "file:///Users/x/active/some-task",
+         "uiState": {"mode": 1, "x": 0, "y": 0, "width": 800, "height": 600}},
+        {"backupPath": "/tmp/b", "uiState": {"mode": 1}},   # empty window, no geometry
+    ])
+    monkeypatch.setattr(cc, "VSCODE_STORAGE", storage)
+    assert cc._vscode_state_windows() == [
+        {"slug": "my-card", "bounds": (71.0, -1368.0, 2930.0, 1368.0)},
+        {"slug": "some-task", "bounds": (0.0, 0.0, 800.0, 600.0)},
+        {"slug": None, "bounds": None},
+    ]
+
+
+def test_vscode_state_windows_raises_when_unreadable(cc, tmp_path, monkeypatch):
+    monkeypatch.setattr(cc, "VSCODE_STORAGE", tmp_path / "missing.json")
+    with pytest.raises(cc.NativeUnavailable):
+        cc._vscode_state_windows()
+
+
+def test_vscode_state_windows_raises_without_windows_state(cc, tmp_path, monkeypatch):
+    storage = tmp_path / "storage.json"
+    storage.write_text(json.dumps({"theme": "dark"}))
+    monkeypatch.setattr(cc, "VSCODE_STORAGE", storage)
+    with pytest.raises(cc.NativeUnavailable):
+        cc._vscode_state_windows()
+
+
+def test_native_windows_maps_cards_and_attaches_ids_by_geometry(cc, tmp_path, monkeypatch):
+    cards = tmp_path / "Cards"
+    board = make_card(cards, "session-card-board", title="Board")
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    monkeypatch.setattr(cc, "_vscode_state_windows", lambda: [
+        {"slug": "session-card-board", "bounds": (71.0, -1368.0, 2930.0, 1368.0)},
+        {"slug": "no-card-for-this", "bounds": (0.0, 0.0, 800.0, 600.0)},
+        {"slug": None, "bounds": None},                     # empty window
+    ])
+    monkeypatch.setattr(cc, "_cg_code_windows", lambda: [
+        {"id": 40691, "bounds": (71.0, -1368.0, 2930.0, 1368.0)},
+        {"id": 123, "bounds": (0.0, 0.0, 800.0, 600.0)},
+        {"id": 456, "bounds": (5.0, 5.0, 640.0, 480.0)},    # the empty window
+    ])
+    rows = cc.native_windows()
+    assert rows == [
+        {"id": 40691, "title": "Board — session-card-board (Workspace)",
+         "slug": "session-card-board", "filePath": str(board.resolve())},
+        {"id": 123, "title": "no-card-for-this",
+         "slug": "no-card-for-this", "filePath": None},
+        {"id": None, "title": "(empty window)", "slug": None, "filePath": None},
+    ]
+
+
+def test_native_windows_raises_on_count_mismatch(cc, monkeypatch):
+    # A window closed since the last state flush (closes are not flushed) —
+    # the persisted list over-reports and must NOT be trusted.
+    monkeypatch.setattr(cc, "_vscode_state_windows", lambda: [
+        {"slug": "a", "bounds": None}, {"slug": "b", "bounds": None},
+    ])
+    monkeypatch.setattr(cc, "_cg_code_windows", lambda: [
+        {"id": 1, "bounds": (0.0, 0.0, 1.0, 1.0)},
+    ])
+    with pytest.raises(cc.NativeUnavailable, match="window server"):
+        cc.native_windows()
+
+
+def test_native_windows_ambiguous_geometry_gets_null_id(cc, tmp_path, monkeypatch):
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": tmp_path / "Cards"})
+    same = (0.0, 0.0, 800.0, 600.0)
+    monkeypatch.setattr(cc, "_vscode_state_windows", lambda: [
+        {"slug": "a", "bounds": same}, {"slug": "b", "bounds": same},
+    ])
+    monkeypatch.setattr(cc, "_cg_code_windows", lambda: [
+        {"id": 1, "bounds": same}, {"id": 2, "bounds": same},
+    ])
+    rows = cc.native_windows()
+    assert [r["id"] for r in rows] == [None, None]   # can't tell them apart
+
+
+def test_windows_json_uses_native_fast_path_without_spawning(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    board = make_card(cards, "session-card-board", title="Board")
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    monkeypatch.setattr(cc, "_vscode_state_windows", lambda: [
+        {"slug": "session-card-board", "bounds": (0.0, 0.0, 800.0, 600.0)},
+    ])
+    monkeypatch.setattr(cc, "_cg_code_windows", lambda: [
+        {"id": 7, "bounds": (0.0, 0.0, 800.0, 600.0)},
+    ])
+
+    def no_spawn(*a, **kw):
+        raise AssertionError("native fast path must not spawn a subprocess")
+    monkeypatch.setattr(cc.subprocess, "run", no_spawn)
+    monkeypatch.setattr(cc.subprocess, "Popen", no_spawn)
+    cc.cmd_windows(NS(json=True))
+    out = json.loads(capsys.readouterr().out)
+    assert out["available"] is True
+    assert out["windows"] == [{"id": 7,
+                               "title": "Board — session-card-board (Workspace)",
+                               "slug": "session-card-board",
+                               "filePath": str(board.resolve())}]
+
+
+def test_focus_cross_space_check_uses_native_fast_path(cc, tmp_path, monkeypatch, capsys):
+    # The reopen guard takes its open-window list from native_windows() when the
+    # fast path answers — no `code --status` involved.
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "session-card-board", title="Board")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    ws = cache / "session-card-board.code-workspace"
+    ws.write_text("{}")
+    monkeypatch.setattr(cc, "CACHE", cache)
+    monkeypatch.setattr(cc, "native_windows", lambda: [
+        {"id": None, "title": "Board — session-card-board (Workspace)",
+         "slug": "session-card-board", "filePath": str(card.resolve())},
+    ])
+    seen = {"reopen": None}
+
+    def fake_run(argv, **kw):
+        class R:
+            returncode = 0
+            stderr = ""
+            stdout = "[]"                          # hs: no current-space match
+        assert argv[0] == cc.HS
+        return R()
+    monkeypatch.setattr(cc.subprocess, "run", fake_run)
+
+    def fake_run_code(argv_tail, timeout):
+        assert argv_tail != ["--status"], "fast path must not fall back to --status"
+        seen["reopen"] = argv_tail
+        return "", "", 0
+    monkeypatch.setattr(cc, "_run_code", fake_run_code)
+    cc.cmd_focus(NS(card=str(card)))
+    assert seen["reopen"] == [str(ws)]
+    assert "another space" in capsys.readouterr().out
+
+
 # ── focus: id-upgrade with AppleScript fallback (subprocess mocked) ─────────────
 def test_focus_by_id_when_window_matches(cc, tmp_path, monkeypatch, capsys):
     cards = tmp_path / "Cards"
@@ -1593,6 +1764,7 @@ def test_focus_by_id_when_window_matches(cc, tmp_path, monkeypatch, capsys):
 
 
 def test_focus_falls_back_to_applescript_when_no_window_matches(cc, tmp_path, monkeypatch, capsys):
+    _no_native(monkeypatch, cc)
     cards = tmp_path / "Cards"
     card = make_card(cards, "session-card-board", title="Board")
     seen = {"osascript": False}
@@ -1615,6 +1787,7 @@ def test_focus_falls_back_to_applescript_when_no_window_matches(cc, tmp_path, mo
 
 
 def test_focus_falls_back_to_applescript_when_hs_unavailable(cc, tmp_path, monkeypatch, capsys):
+    _no_native(monkeypatch, cc)
     cards = tmp_path / "Cards"
     card = make_card(cards, "session-card-board", title="Board")
     seen = {"osascript": False}
@@ -1637,6 +1810,7 @@ def test_focus_falls_back_to_applescript_when_hs_unavailable(cc, tmp_path, monke
 
 
 def test_focus_reopens_workspace_for_cross_space_window(cc, tmp_path, monkeypatch, capsys):
+    _no_native(monkeypatch, cc)
     # #47: Hammerspoon (AX) can't see a window on another Mission Control space.
     # When VS Code itself reports the window open and the cached workspace exists,
     # focus upgrades to `code <ws>` (raises the existing window there) — no AppleScript.
@@ -1674,6 +1848,7 @@ def test_focus_reopens_workspace_for_cross_space_window(cc, tmp_path, monkeypatc
 
 
 def test_focus_does_not_reopen_when_window_not_open(cc, tmp_path, monkeypatch, capsys):
+    _no_native(monkeypatch, cc)
     # A cached workspace file alone must NOT trigger a reopen — `focus` never
     # opens a closed workspace. Falls through to AppleScript instead.
     cards = tmp_path / "Cards"
