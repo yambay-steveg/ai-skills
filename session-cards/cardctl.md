@@ -14,7 +14,6 @@ below) — no hand-copying.
 cardctl launch <card.md>          # open the card's folders + resume its session (pin → latest → new)
 cardctl launch <card.md> --new    # start a FRESH session (ignore pin / latest)
 cardctl launch <card.md> --pick   # choose from the card's recent sessions (terminal only)
-cardctl launch <card.md> -d       # start in bypassPermissions mode (skip approvals)
 cardctl link   <card.md> --current   # pin the running session + log it under ## Sessions
 cardctl link   <card.md> --session ID # pin a specific session id (e.g. one that ran elsewhere)
 cardctl new    <slug> --title …   # scaffold a card in the Domain vault's Cards/ folder
@@ -306,9 +305,10 @@ pure pointer card over `--path` folders; with no `--path` its `paths` is empty a
    timestamps + a first-message preview to choose); else fresh.
 3. Writes a generated `.code-workspace` (`~/.cache/session-cards/<card>.code-workspace`) and opens
    it with `code <ws>`. When resuming, the session's **origin folder is prepended** so the
-   extension's workspace-scoped lookup finds it (see `../poc/TEST.md`). With **`-d`** the workspace
-   carries `claudeCode.allowDangerouslySkipPermissions:true` + `initialPermissionMode:bypassPermissions`
-   (window-scoped only; regenerated each launch — never touches your real folders).
+   extension's workspace-scoped lookup finds it (see `../poc/TEST.md`). The workspace always
+   carries `claudeCode.allowDangerouslySkipPermissions:true` — bypass is **armed** (available in
+   each tab's mode selector) but never forced; every session dials its own mode (window-scoped
+   only; regenerated each launch — never touches your real folders).
 4. Waits for the card's window: polls Hammerspoon (up to `--delay`s, default 3) until the
    workspace window is open **and frontmost** — raising it by window id if it opens without
    focus — then:
@@ -325,8 +325,8 @@ pure pointer card over `--path` folders; with no `--path` its `paths` is empty a
 ### Buttons (Obsidian)
 
 The card's button bar maps to these, via Meta Bind templates → Shell Commands:
-**▶ Launch session** (`launch`) · **✦ New session** (`--new`) · **⚡ Launch (skip approvals)**
-(`-d`) · **📌 Pin latest** (`link --force`). See the operating note for the wiring.
+**▶ Launch session** (`launch`) · **✦ New session** (`--new`) · **📌 Pin latest**
+(`link --force`). See the operating note for the wiring.
 
 ### `link` — pin a session + log history
 
@@ -376,7 +376,7 @@ Note: `cardctl` only reads `paths`/`sessionId`; the rest are for the board/graph
 ## Status / tested
 
 - ✅ `launch` — resume (pin / latest-for-folder) and start-new, multi-root, origin auto-prepended;
-  `--pick` chooser; `-d` bypassPermissions. Driven from Obsidian via the 4-button bar.
+  `--pick` chooser. Driven from Obsidian via the 3-button bar.
 - ✅ `link` — captures newest session id, preserves the rest of the card file (`--force` to repin).
 - ✅ `new` — scaffolds a card; auto-creates the activity folder from the slug at `<active-root>/<slug>`
   as `paths[0]` (`--path` = additional existing folders, appended after; `--no-folder` to opt out).
