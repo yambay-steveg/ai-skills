@@ -26,11 +26,16 @@ Commands:
   cardctl list [--json]             List every card across the Cards/ folders. With --json, emit a
                                     JSON array (one object per card) the board consumes directly.
   cardctl focus <card.md>           Bring the card's VS Code window to the front. Prefers a
-                                    deterministic focus-by-id via Hammerspoon (`hs`); falls back
-                                    to AppleScript AXRaise-by-title. Best-effort, never crashes.
-  cardctl windows [--json]          List the open VS Code windows (via Hammerspoon) mapped to
-                                    their cards. --json emits {available, windows:[…]} so the
-                                    board can tell "no windows" apart from "engine unavailable".
+                                    deterministic focus-by-id via Hammerspoon (`hs`); when the
+                                    window is on another Mission Control space, reopens the
+                                    card's workspace to raise it there; falls back to AppleScript
+                                    AXRaise-by-title. Best-effort, never crashes.
+  cardctl windows [--json]          List the open VS Code windows mapped to their cards.
+                                    `code --status` supplies the list (all Mission Control
+                                    spaces); Hammerspoon adds window ids where visible (current
+                                    space — otherwise id is null). --json emits {available,
+                                    windows:[…]} so the board can tell "no windows" apart from
+                                    "both engines unavailable".
 
 macOS only for now. `code` and `open` are resolved by absolute path (works under GUI launchers
 like Obsidian Shell Commands, which run with a minimal PATH).
@@ -1398,13 +1403,20 @@ def cmd_list(args):
             print(f"{c['title']} — {c['status'] or '?'}")
 
 
-# ── Hammerspoon window enumeration ─────────────────────────────────────────────
-# The deterministic engine for window targeting is Hammerspoon: `hs -c '<lua>'`
-# runs Lua in the running Hammerspoon and prints the return value. We enumerate the
-# VS Code (`Code`) windows and read each one's title, which `build_workspace` stamps
-# as "<card title> — <rootName>" (VS Code shows "<title> — <rootName> (Workspace)",
-# plus " — Modified" when the window is dirty). The "<rootName>" segment is the card
-# slug (== the activity-folder basename == the card filename stem).
+# ── Window enumeration (VS Code + Hammerspoon) ─────────────────────────────────
+# Two engines, complementary blind spots (#47):
+#   * `code --status` — VS Code reports its OWN windows, so it sees every window on
+#     every Mission Control space. Titles only — no OS window ids.
+#   * Hammerspoon (`hs -c '<lua>'`) — OS window ids + focus state, but it rides the
+#     macOS Accessibility API, which only exposes windows on the CURRENTLY ACTIVE
+#     space(s). Windows parked on other spaces are invisible to it.
+# `windows` takes VS Code's list as authoritative and overlays ids/focus from
+# Hammerspoon where visible; `focus` upgrades from focus-by-id to a workspace
+# reopen when the target window is open but on another space.
+# Window titles are what `build_workspace` stamps: "<card title> — <rootName>"
+# (VS Code shows "<title> — <rootName> (Workspace)", plus " — Modified" when the
+# window is dirty). The "<rootName>" segment is the card slug (== the
+# activity-folder basename == the card filename stem).
 
 # Lua: collect {id,title} for every window whose app is "Code", as a JSON array.
 _HS_LIST_WINDOWS_LUA = (
@@ -1419,6 +1431,46 @@ _HS_LIST_WINDOWS_LUA = (
 class HsUnavailable(Exception):
     """Hammerspoon couldn't be driven (not installed, not running / ipc port
     unreachable, non-zero exit, or unparseable output). Carries a short reason."""
+
+
+class CodeUnavailable(Exception):
+    """`code --status` couldn't be run (CLI not installed, non-zero exit, timeout).
+    Carries a short reason."""
+
+
+# Matches one window line of `code --status` output: "|  Window (<title>)".
+# Greedy body + anchored trailing ")" so titles containing parentheses —
+# e.g. "Board (Phase 2) — session-card-board (Workspace)" — parse whole.
+_CODE_STATUS_WINDOW_RE = re.compile(r"^\s*\|\s+Window \((.*)\)\s*$")
+
+
+def vscode_status_windows():
+    """Enumerate open VS Code windows by asking VS Code itself (`code --status`),
+    which sees every window regardless of Mission Control space — unlike the
+    Accessibility API Hammerspoon rides (#47). Returns a list of window titles
+    (same format `slug_from_window_title` parses). Raises CodeUnavailable on any
+    engine failure; an empty list means VS Code answered and has no windows."""
+    try:
+        r = subprocess.run(
+            [CODE, "--status"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,  # --status walks workspace folders; big trees take seconds
+        )
+    except FileNotFoundError:
+        raise CodeUnavailable("code (VS Code CLI) not found")
+    except (OSError, subprocess.SubprocessError) as e:
+        raise CodeUnavailable(f"could not run code --status: {e}")
+    if r.returncode != 0:
+        err = (r.stderr or "").strip() or (r.stdout or "").strip()
+        raise CodeUnavailable(err or f"code --status exited {r.returncode}")
+    titles = []
+    for ln in (r.stdout or "").splitlines():
+        m = _CODE_STATUS_WINDOW_RE.match(ln)
+        if m:
+            titles.append(m.group(1))
+    return titles
 
 
 def _run_hs(lua):
@@ -1507,27 +1559,53 @@ def stem_to_card():
 
 
 def cmd_windows(args):
-    """List the open VS Code windows (via Hammerspoon) mapped to their cards. The
-    board reads `--json` to drive its session panel (open vs recently-closed). The
-    JSON is an OBJECT, not a bare array, so the board can distinguish "no windows
-    open" (available:true, windows:[]) from "engine unavailable" (available:false) —
-    in which case we still exit 0 so the board degrades rather than hard-erroring."""
+    """List the open VS Code windows mapped to their cards. `code --status` is the
+    authoritative window list (it sees all Mission Control spaces — #47); Hammerspoon
+    overlays each window's OS id where the Accessibility API can see it (current
+    space only), so a window on another space has `id: null`. Either engine alone
+    still yields a usable list. The board reads `--json` to drive its session panel
+    (open vs recently-closed). The JSON is an OBJECT, not a bare array, so the board
+    can distinguish "no windows open" (available:true, windows:[]) from "both engines
+    unavailable" (available:false) — in which case we still exit 0 so the board
+    degrades rather than hard-erroring."""
+    titles, errs = None, []
     try:
-        wins = hs_code_windows()
+        titles = vscode_status_windows()
+    except CodeUnavailable as e:
+        errs.append(f"code --status: {e}")
+    try:
+        hs_wins = hs_code_windows()
     except HsUnavailable as e:
-        if args.json:
-            print(json.dumps({"available": False, "error": str(e), "windows": []},
-                             ensure_ascii=False))
-        else:
-            print(f"cardctl: windows unavailable: {e}", file=sys.stderr)
-        return
+        hs_wins = []
+        errs.append(f"hammerspoon: {e}")
+        if titles is None:  # both engines down — degrade, exit 0
+            msg = "; ".join(errs)
+            if args.json:
+                print(json.dumps({"available": False, "error": msg, "windows": []},
+                                 ensure_ascii=False))
+            else:
+                print(f"cardctl: windows unavailable: {msg}", file=sys.stderr)
+            return
+    if titles is None:
+        # VS Code CLI down — Hammerspoon-only view (current space's windows).
+        titles = [w["title"] for w in hs_wins]
+
+    # Attach ids/focus by exact title, falling back to slug (the two engines can
+    # disagree on a dirty window's " — Modified" suffix).
+    by_title, by_slug = {}, {}
+    for w in hs_wins:
+        by_title.setdefault(w["title"], w)
+        s = slug_from_window_title(w["title"])
+        if s:
+            by_slug.setdefault(s, w)
     by_stem = stem_to_card()
     rows = []
-    for w in wins:
-        slug = slug_from_window_title(w["title"])
+    for t in titles:
+        slug = slug_from_window_title(t)
         card = by_stem.get(slug) if slug else None
+        hw = by_title.get(t) or (by_slug.get(slug) if slug else None)
         rows.append({
-            "id": w["id"], "title": w["title"],
+            "id": hw["id"] if hw else None, "title": t,
             "slug": slug,
             "filePath": str(card.resolve()) if card else None,
         })
@@ -1537,7 +1615,8 @@ def cmd_windows(args):
         if not rows:
             print("(no VS Code windows open)")
         for r in rows:
-            print(f"  {r['id']}  {r['slug'] or '(unmatched)'}  — {r['title']}")
+            wid = r["id"] if r["id"] is not None else "-"
+            print(f"  {wid}  {r['slug'] or '(unmatched)'}  — {r['title']}")
 
 
 def _focus_by_id(win_id):
@@ -1585,12 +1664,15 @@ def cmd_focus(args):
 
     Prefers Hammerspoon: enumerate the `Code` windows, match the one whose title maps
     to this card's slug (the card filename stem == the activity-folder basename, which
-    `build_workspace` stamps into `window.title`), and focus it by id. If Hammerspoon
-    is unavailable OR no window matches, fall back to driving macOS System Events:
-    set the `Code` process frontmost, then AXRaise the window whose title contains the
-    card title. The AppleScript path needs Accessibility permission at runtime — if it
-    fails (perm not granted, no match), we print a clear note and return rather than
-    crash. Best-effort by design."""
+    `build_workspace` stamps into `window.title`), and focus it by id. Hammerspoon
+    only sees the current Mission Control space (#47), so when it has no match but
+    VS Code itself reports the window open, reopen the card's cached workspace —
+    VS Code raises the existing window and macOS follows it to its space. Last
+    resort: drive macOS System Events — set the `Code` process frontmost, then
+    AXRaise the window whose title contains the card title. The AppleScript path
+    needs Accessibility permission at runtime — if it fails (perm not granted, no
+    match), we print a clear note and return rather than crash. Best-effort by
+    design."""
     fm, _ = read_card(args.card)
     title = unquote(fm.get("title") or Path(args.card).stem)
     slug = Path(args.card).stem
@@ -1600,9 +1682,27 @@ def cmd_focus(args):
         if _focus_by_id_for_card(slug):
             print(f"focused VS Code window for {title!r} (by id)")
             return
-        # Hammerspoon worked but no window matched — fall through to AppleScript.
+        # Hammerspoon worked but no window matched — cross-space check next.
     except HsUnavailable:
-        pass  # engine unavailable — fall back to AppleScript AXRaise-by-title
+        pass  # engine unavailable — try the cross-space path, then AppleScript
+
+    # Cross-space upgrade: only when VS Code confirms the window is actually open
+    # (never open a closed workspace from `focus`) and its cached workspace file
+    # exists to retarget. `code <ws>` on an open workspace raises, never duplicates.
+    try:
+        open_slugs = {slug_from_window_title(t) for t in vscode_status_windows()}
+    except CodeUnavailable:
+        open_slugs = set()
+    ws = CACHE / f"{slug}.code-workspace"
+    if slug in open_slugs and ws.exists():
+        try:
+            subprocess.run([CODE, str(ws)], check=True, timeout=15,
+                           stdin=subprocess.DEVNULL, capture_output=True)
+            print(f"focused VS Code window for {title!r} "
+                  "(workspace reopen — window on another space)")
+            return
+        except (OSError, subprocess.SubprocessError):
+            pass  # fall through to AppleScript
 
     # AppleScript: raise the first Code window whose title contains the card title.
     # Escape double quotes/backslashes in the title for embedding in the script.
@@ -2048,10 +2148,11 @@ def main():
     pf.set_defaults(func=cmd_focus)
 
     pwin = sub.add_parser("windows", help="list open VS Code windows mapped to cards "
-                                          "(via Hammerspoon; --json for the board)")
+                                          "(code --status + Hammerspoon; --json for "
+                                          "the board)")
     pwin.add_argument("--json", action="store_true",
                       help="emit {available, windows:[…]} so the board can tell "
-                           "'no windows' from 'engine unavailable'")
+                           "'no windows' from 'both engines unavailable'")
     pwin.set_defaults(func=cmd_windows)
 
     pw = sub.add_parser("which", help="which card owns a folder (reverse lookup; for the session-start hook)")

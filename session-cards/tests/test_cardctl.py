@@ -1372,10 +1372,15 @@ def test_windows_json_maps_matched_and_unmatched(cc, tmp_path, monkeypatch, caps
     cards = tmp_path / "Cards"
     matched = make_card(cards, "session-card-board", title="Board")
     monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    monkeypatch.setattr(cc, "vscode_status_windows", lambda: [
+        "Board — session-card-board (Workspace)",
+        "no-card-here — unknown-slug (Workspace)",
+        "a manually opened folder",                          # no separator → slug None
+    ])
     _fake_hs(monkeypatch, cc, stdout=json.dumps([
         {"id": 19146, "title": "Board — session-card-board (Workspace)"},
         {"id": 222, "title": "no-card-here — unknown-slug (Workspace)"},
-        {"id": 333, "title": "a manually opened folder"},   # no separator → slug None
+        {"id": 333, "title": "a manually opened folder"},
     ]))
     cc.cmd_windows(NS(json=True))
     out = json.loads(capsys.readouterr().out)
@@ -1387,14 +1392,123 @@ def test_windows_json_maps_matched_and_unmatched(cc, tmp_path, monkeypatch, caps
     assert w[333]["slug"] is None and w[333]["filePath"] is None
 
 
+def test_windows_json_cross_space_window_has_null_id(cc, tmp_path, monkeypatch, capsys):
+    # The core of #47: VS Code reports windows on every Mission Control space,
+    # Hammerspoon only the current one — off-space windows must still be listed,
+    # with id null (nothing for focus-by-id to target).
+    cards = tmp_path / "Cards"
+    here = make_card(cards, "on-this-space", title="Here")
+    away = make_card(cards, "on-other-space", title="Away")
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    monkeypatch.setattr(cc, "vscode_status_windows", lambda: [
+        "Here — on-this-space (Workspace)",
+        "Away — on-other-space (Workspace)",
+    ])
+    _fake_hs(monkeypatch, cc, stdout=json.dumps([
+        {"id": 40691, "title": "Here — on-this-space (Workspace)"},
+    ]))
+    cc.cmd_windows(NS(json=True))
+    out = json.loads(capsys.readouterr().out)
+    assert out["available"] is True
+    w = {r["slug"]: r for r in out["windows"]}
+    assert w["on-this-space"]["id"] == 40691
+    assert w["on-this-space"]["filePath"] == str(here.resolve())
+    assert w["on-other-space"]["id"] is None                 # invisible to AX
+    assert w["on-other-space"]["filePath"] == str(away.resolve())
+
+
+def test_windows_json_id_attaches_by_slug_when_titles_disagree(cc, tmp_path, monkeypatch, capsys):
+    # The engines can disagree on the dirty-window suffix ("… — Modified") —
+    # the id must still attach via the slug.
+    cards = tmp_path / "Cards"
+    make_card(cards, "session-card-board", title="Board")
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    monkeypatch.setattr(cc, "vscode_status_windows", lambda: [
+        "Board — session-card-board (Workspace)",
+    ])
+    _fake_hs(monkeypatch, cc, stdout=json.dumps([
+        {"id": 7, "title": "Board — session-card-board (Workspace) — Modified"},
+    ]))
+    cc.cmd_windows(NS(json=True))
+    out = json.loads(capsys.readouterr().out)
+    assert out["windows"][0]["id"] == 7
+
+
+def test_windows_json_degrades_to_hs_when_code_cli_unavailable(cc, tmp_path, monkeypatch, capsys):
+    # `code` CLI missing → the Hammerspoon-only (current-space) view, still available.
+    cards = tmp_path / "Cards"
+    matched = make_card(cards, "session-card-board", title="Board")
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": cards})
+    def no_code():
+        raise cc.CodeUnavailable("code (VS Code CLI) not found")
+    monkeypatch.setattr(cc, "vscode_status_windows", no_code)
+    _fake_hs(monkeypatch, cc, stdout=json.dumps([
+        {"id": 19146, "title": "Board — session-card-board (Workspace)"},
+    ]))
+    cc.cmd_windows(NS(json=True))
+    out = json.loads(capsys.readouterr().out)
+    assert out["available"] is True
+    assert out["windows"][0]["id"] == 19146
+    assert out["windows"][0]["filePath"] == str(matched.resolve())
+
+
 def test_windows_json_engine_unavailable_is_available_false(cc, tmp_path, monkeypatch, capsys):
+    # available:false only when BOTH engines are down.
     monkeypatch.setattr(cc, "CARDS_DIRS", {"work": tmp_path / "Cards"})
+    def no_code():
+        raise cc.CodeUnavailable("code (VS Code CLI) not found")
+    monkeypatch.setattr(cc, "vscode_status_windows", no_code)
     _fake_hs(monkeypatch, cc, stderr="hs: can't access … message port")
     cc.cmd_windows(NS(json=True))  # must exit 0 (return), not raise
     out = json.loads(capsys.readouterr().out)
     assert out["available"] is False
     assert out["windows"] == []
     assert out["error"]
+
+
+# ── vscode_status_windows (`code --status` subprocess mocked) ───────────────────
+def _fake_code_status(monkeypatch, cc, *, stdout="", stderr="", returncode=0, raises=None):
+    """Monkeypatch subprocess.run as `code --status` would behave."""
+    def fake_run(argv, **kw):
+        assert argv[0] == cc.CODE and argv[1] == "--status"
+        if raises is not None:
+            raise raises
+        class R:
+            pass
+        R.stdout, R.stderr, R.returncode = stdout, stderr, returncode
+        return R()
+    monkeypatch.setattr(cc.subprocess, "run", fake_run)
+
+
+def test_vscode_status_windows_parses_window_lines(cc, monkeypatch):
+    _fake_code_status(monkeypatch, cc, stdout=(
+        "Version:          Code 1.101.2\n"
+        "Workspace Stats: \n"
+        "|  Window (Board (Phase 2) — session-card-board (Workspace))\n"
+        "|  Window (Away — on-other-space (Workspace))\n"
+        "|    Folder (session-card-board): 3 files\n"
+    ))
+    assert cc.vscode_status_windows() == [
+        "Board (Phase 2) — session-card-board (Workspace)",  # inner parens survive
+        "Away — on-other-space (Workspace)",
+    ]
+
+
+def test_vscode_status_windows_empty_when_no_windows(cc, monkeypatch):
+    _fake_code_status(monkeypatch, cc, stdout="Version:          Code 1.101.2\n")
+    assert cc.vscode_status_windows() == []
+
+
+def test_vscode_status_windows_raises_on_missing_binary(cc, monkeypatch):
+    _fake_code_status(monkeypatch, cc, raises=FileNotFoundError())
+    with pytest.raises(cc.CodeUnavailable):
+        cc.vscode_status_windows()
+
+
+def test_vscode_status_windows_raises_on_nonzero_exit(cc, monkeypatch):
+    _fake_code_status(monkeypatch, cc, returncode=1, stderr="boom")
+    with pytest.raises(cc.CodeUnavailable):
+        cc.vscode_status_windows()
 
 
 # ── focus: id-upgrade with AppleScript fallback (subprocess mocked) ─────────────
@@ -1464,6 +1578,71 @@ def test_focus_falls_back_to_applescript_when_hs_unavailable(cc, tmp_path, monke
     cc.cmd_focus(NS(card=str(card)))
     assert seen["osascript"] is True               # AppleScript fallback used
     assert "focused" in capsys.readouterr().out
+
+
+def test_focus_reopens_workspace_for_cross_space_window(cc, tmp_path, monkeypatch, capsys):
+    # #47: Hammerspoon (AX) can't see a window on another Mission Control space.
+    # When VS Code itself reports the window open and the cached workspace exists,
+    # focus upgrades to `code <ws>` (raises the existing window there) — no AppleScript.
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "session-card-board", title="Board")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    ws = cache / "session-card-board.code-workspace"
+    ws.write_text("{}")
+    monkeypatch.setattr(cc, "CACHE", cache)
+    seen = {"reopen": None, "osascript": False}
+
+    def fake_run(argv, **kw):
+        class R:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+        if argv[0] == cc.HS:
+            R.stdout = "[]"                        # current space: no match
+        elif argv[0] == cc.CODE and argv[1] == "--status":
+            R.stdout = "|  Window (Board — session-card-board (Workspace))\n"
+        elif argv[0] == cc.CODE:
+            seen["reopen"] = argv                  # the workspace reopen
+        elif argv[0] == cc.OSASCRIPT:
+            seen["osascript"] = True
+        return R()
+    monkeypatch.setattr(cc.subprocess, "run", fake_run)
+    cc.cmd_focus(NS(card=str(card)))
+    assert seen["reopen"] == [cc.CODE, str(ws)]
+    assert seen["osascript"] is False              # never reached AppleScript
+    assert "another space" in capsys.readouterr().out
+
+
+def test_focus_does_not_reopen_when_window_not_open(cc, tmp_path, monkeypatch, capsys):
+    # A cached workspace file alone must NOT trigger a reopen — `focus` never
+    # opens a closed workspace. Falls through to AppleScript instead.
+    cards = tmp_path / "Cards"
+    card = make_card(cards, "session-card-board", title="Board")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "session-card-board.code-workspace").write_text("{}")
+    monkeypatch.setattr(cc, "CACHE", cache)
+    seen = {"reopen": False, "osascript": False}
+
+    def fake_run(argv, **kw):
+        class R:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+        if argv[0] == cc.HS:
+            R.stdout = "[]"
+        elif argv[0] == cc.CODE and argv[1] == "--status":
+            R.stdout = "|  Window (Other — other-card (Workspace))\n"
+        elif argv[0] == cc.CODE:
+            seen["reopen"] = True
+        elif argv[0] == cc.OSASCRIPT:
+            seen["osascript"] = True
+        return R()
+    monkeypatch.setattr(cc.subprocess, "run", fake_run)
+    cc.cmd_focus(NS(card=str(card)))
+    assert seen["reopen"] is False
+    assert seen["osascript"] is True
 
 
 # ── new (auto activity folder) ─────────────────────────────────────────────────
