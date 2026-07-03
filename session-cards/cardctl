@@ -47,6 +47,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -1434,8 +1435,42 @@ class HsUnavailable(Exception):
 
 
 class CodeUnavailable(Exception):
-    """`code --status` couldn't be run (CLI not installed, non-zero exit, timeout).
+    """The VS Code CLI couldn't be driven (not installed, non-zero exit, timeout).
     Carries a short reason."""
+
+
+def _run_code(argv_tail, timeout):
+    """Run the VS Code CLI (`code <argv_tail…>`) and return (stdout, stderr,
+    returncode). Raises CodeUnavailable on missing binary / spawn failure / timeout.
+
+    NOT subprocess.run(timeout=…): the `code` launcher is a bash wrapper that
+    spawns Electron as a grandchild WITHOUT exec, and run()'s timeout SIGKILLs
+    only the direct child (the wrapper) then blocks forever draining the stdout
+    pipe the Electron grandchild still holds (#49). Own process group +
+    killpg-on-timeout makes the hang impossible."""
+    try:
+        p = subprocess.Popen(
+            [CODE] + list(argv_tail),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,  # own process group → killpg reaches Electron
+        )
+    except FileNotFoundError:
+        raise CodeUnavailable("code (VS Code CLI) not found")
+    except OSError as e:
+        raise CodeUnavailable(f"could not run code: {e}")
+    try:
+        out, err = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)  # pgid == pid (start_new_session)
+        except (ProcessLookupError, PermissionError):
+            pass
+        p.communicate()  # group is dead → pipes closed; reap without blocking
+        raise CodeUnavailable(f"code {argv_tail[0]} timed out after {timeout}s")
+    return out or "", err or "", p.returncode
 
 
 # Matches one window line of `code --status` output: "|  Window (<title>)".
@@ -1449,24 +1484,16 @@ def vscode_status_windows():
     which sees every window regardless of Mission Control space — unlike the
     Accessibility API Hammerspoon rides (#47). Returns a list of window titles
     (same format `slug_from_window_title` parses). Raises CodeUnavailable on any
-    engine failure; an empty list means VS Code answered and has no windows."""
-    try:
-        r = subprocess.run(
-            [CODE, "--status"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=30,  # --status walks workspace folders; big trees take seconds
-        )
-    except FileNotFoundError:
-        raise CodeUnavailable("code (VS Code CLI) not found")
-    except (OSError, subprocess.SubprocessError) as e:
-        raise CodeUnavailable(f"could not run code --status: {e}")
-    if r.returncode != 0:
-        err = (r.stderr or "").strip() or (r.stdout or "").strip()
-        raise CodeUnavailable(err or f"code --status exited {r.returncode}")
+    engine failure; an empty list means VS Code answered and has no windows.
+    Timeout is deliberately short: under a background-QoS parent (the board's
+    server) --status can crawl, and `windows` degrades to the Hammerspoon-only
+    view rather than keeping the caller waiting (#49)."""
+    out, err, rc = _run_code(["--status"], timeout=10)
+    if rc != 0:
+        raise CodeUnavailable(err.strip() or out.strip()
+                              or f"code --status exited {rc}")
     titles = []
-    for ln in (r.stdout or "").splitlines():
+    for ln in out.splitlines():
         m = _CODE_STATUS_WINDOW_RE.match(ln)
         if m:
             titles.append(m.group(1))
@@ -1696,12 +1723,12 @@ def cmd_focus(args):
     ws = CACHE / f"{slug}.code-workspace"
     if slug in open_slugs and ws.exists():
         try:
-            subprocess.run([CODE, str(ws)], check=True, timeout=15,
-                           stdin=subprocess.DEVNULL, capture_output=True)
-            print(f"focused VS Code window for {title!r} "
-                  "(workspace reopen — window on another space)")
-            return
-        except (OSError, subprocess.SubprocessError):
+            _, _, rc = _run_code([str(ws)], timeout=15)
+            if rc == 0:
+                print(f"focused VS Code window for {title!r} "
+                      "(workspace reopen — window on another space)")
+                return
+        except CodeUnavailable:
             pass  # fall through to AppleScript
 
     # AppleScript: raise the first Code window whose title contains the card title.
