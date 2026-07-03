@@ -211,8 +211,8 @@ cardctl deploy all --apply   # write changes to BOTH vaults + ~/bin
 | --- | --- | --- | --- |
 | Bases board | `deploy/Cards/board.base` | `Cards/board.base` | copy |
 | Card template | `deploy/Templates/card.md` | `Templates/card.md` | copy |
-| Shell Commands | `deploy/fragments/shellcommands.commands.json` | `.obsidian/plugins/obsidian-shellcommands/data.json` | **merge** our 4 commands into `shell_commands` by `id` |
-| Meta Bind buttons | `deploy/fragments/metabind.buttons.json` | `.obsidian/plugins/obsidian-meta-bind-plugin/data.json` | **merge** our 4 buttons into `buttonTemplates` by `id` |
+| Shell Commands | `deploy/fragments/shellcommands.commands.json` | `.obsidian/plugins/obsidian-shellcommands/data.json` | **merge** our 3 commands into `shell_commands` by `id` |
+| Meta Bind buttons | `deploy/fragments/metabind.buttons.json` | `.obsidian/plugins/obsidian-meta-bind-plugin/data.json` | **merge** our 3 buttons into `buttonTemplates` by `id` |
 | Templater | `deploy/fragments/templater.folder-template.json` | `.obsidian/plugins/templater-obsidian/data.json` | **merge** the `Cards`→`Templates/card.md` folder-template + enabling flags |
 | Engine | `cardctl` | `~/bin/cardctl` | copy (+ `chmod 755`) — global, once |
 | SessionStart hook | `../bin/session-start-hook.sh` | `~/bin/session-start-hook.sh` | copy (+ `chmod 755`) — global, once |
