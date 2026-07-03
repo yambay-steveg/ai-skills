@@ -22,8 +22,8 @@ cardctl set-status <card.md> <s>  # set lifecycle status (single writer of the f
 cardctl set <card.md> [--area … --program … --raised-at … --customer … --add-tag … --remove-tag … --add-path …]  # write metadata (the /card-model apply-on-confirm writer)
 cardctl lint [card.md] [--json]   # check cards for model drift (/card-model linter); --json = findings array
 cardctl list [--json]             # list all cards across the Cards/ folders; --json = the board's read interface
-cardctl focus  <card.md>          # bring the card's VS Code window to the front (Hammerspoon focus-by-id; AppleScript fallback)
-cardctl windows [--json]          # list open VS Code windows mapped to cards (via Hammerspoon); --json = board read interface
+cardctl focus  <card.md>          # bring the card's VS Code window to the front (Hammerspoon focus-by-id; cross-space workspace reopen; AppleScript fallback)
+cardctl windows [--json]          # list open VS Code windows mapped to cards (code --status + Hammerspoon ids); --json = board read interface
 cardctl reconcile [--apply]       # file folders of cards marked archived (R9; done is left in place)
 cardctl which [folder] [--record] # which card owns a folder (reverse lookup; powers the SessionStart hook)
 cardctl deploy <work|personal|all> [--apply]  # push the canonical surfaces to a vault + ~/bin (R10)
@@ -128,17 +128,25 @@ the board's `cardSource` already consumes `list --json` as its single read path 
 never parses card markdown), so the fly-out Session history (slice 6) needs no second process spawn
 or per-card fetch.
 
-## `windows` — open VS Code windows mapped to cards (Hammerspoon)
+## `windows` — open VS Code windows mapped to cards (code --status + Hammerspoon)
 
-`cardctl windows --json` enumerates the open VS Code windows via **Hammerspoon** (`hs -c '<lua>'` runs Lua
-in the running Hammerspoon and prints the result) and maps each to its card. Each generated window's title
-is `"<card title> — <rootName> (Workspace)"` (`build_workspace` stamps the `window.title`; VS Code appends
-` (Workspace)` and a trailing ` — Modified` when dirty), and the `<rootName>` segment is the card **slug**
-(== the activity-folder basename == the card filename stem). `slug_from_window_title` strips those suffixes
-and takes the substring after the *last* ` — ` separator, then we look the slug up against `{stem: card}`
-across every `Cards/` folder.
+`cardctl windows --json` enumerates the open VS Code windows and maps each to its card. Two engines with
+complementary blind spots (#47):
 
-The JSON is an **object, not a bare array**, so the board can tell *no windows open* from *engine
+- **`code --status`** (authoritative list) — VS Code reports its *own* windows, so it sees every window on
+  **every Mission Control space**. Titles only, no OS window ids.
+- **Hammerspoon** (`hs -c '<lua>'` runs Lua in the running Hammerspoon and prints the result) — supplies OS
+  window **ids** and focus state, but it rides the macOS Accessibility API, which only exposes windows on
+  the **currently active space(s)**. A window parked on another space gets `"id": null`.
+
+Each generated window's title is `"<card title> — <rootName> (Workspace)"` (`build_workspace` stamps the
+`window.title`; VS Code appends ` (Workspace)` and a trailing ` — Modified` when dirty), and the
+`<rootName>` segment is the card **slug** (== the activity-folder basename == the card filename stem).
+`slug_from_window_title` strips those suffixes and takes the substring after the *last* ` — ` separator,
+then we look the slug up against `{stem: card}` across every `Cards/` folder. Ids attach to titles by exact
+match, falling back to slug match (the engines can disagree on the dirty suffix).
+
+The JSON is an **object, not a bare array**, so the board can tell *no windows open* from *engines
 unavailable*:
 
 ```json
@@ -147,12 +155,13 @@ unavailable*:
               "slug": "session-card-board", "filePath": "/…/session-card-board.md"}, …]}
 ```
 
-`slug`/`filePath` are `null` for an unmatched window (manually-opened folder, or a slug with no card). On
-engine failure (Hammerspoon not installed/running, ipc message-port unreachable, bad output) it emits
-`{"available": false, "error": "<reason>", "windows": []}` and **exits 0** — so the board reads the JSON
-and degrades, rather than treating it as a hard error. Without `--json` it prints a brief human listing.
-This powers the board's session-panel v2 (open vs recently-closed). **Depends on Hammerspoon** with the ipc
-module loaded (`hs` on PATH).
+`slug`/`filePath` are `null` for an unmatched window (manually-opened folder, or a slug with no card).
+Either engine alone still yields a usable list (`code --status` down → Hammerspoon's current-space view;
+Hammerspoon down → all windows with null ids). Only when **both** fail does it emit
+`{"available": false, "error": "<reason>", "windows": []}` — and it still **exits 0**, so the board reads
+the JSON and degrades rather than treating it as a hard error. Without `--json` it prints a brief human
+listing (`-` in the id column for a null id). This powers the board's session-panel v2 (open vs
+recently-closed).
 
 ## `focus` — window-targeting primitive
 
@@ -160,11 +169,14 @@ module loaded (`hs` on PATH).
 no window-targeting param, so this is the deterministic complement to launch's best-effort `activate` nudge.
 It prefers a **Hammerspoon focus-by-id**: enumerate the `Code` windows (as `windows` does), find the one
 whose title maps to this card's slug (the card filename stem, stamped into `window.title` by
-`build_workspace`), and focus it by id (`hs.window.get(<id>):focus()`). **If Hammerspoon is unavailable, or
-no window matches, it falls back** to driving macOS System Events (via `osascript`): set the `Code` process
-frontmost and `AXRaise` the window whose title contains the card title. The AppleScript path **needs macOS
-Accessibility permission** for the launching app (System Settings → Privacy & Security → Accessibility); the
-whole thing is best-effort — if both paths fail it prints a clear message and returns rather than crashing.
+`build_workspace`), and focus it by id (`hs.window.get(<id>):focus()`). When Hammerspoon has no match
+(it can't see other Mission Control spaces — #47) but **`code --status` confirms the window is open**, it
+upgrades to a **workspace reopen**: `code <cached .code-workspace>` raises the existing window and macOS
+follows it to its space (guarded — `focus` never opens a *closed* workspace). Last resort: drive macOS
+System Events (via `osascript`) — set the `Code` process frontmost and `AXRaise` the window whose title
+contains the card title. The AppleScript path **needs macOS Accessibility permission** for the launching
+app (System Settings → Privacy & Security → Accessibility); the whole thing is best-effort — if every path
+fails it prints a clear message and returns rather than crashing.
 (Launch is intentionally left as-is — the standalone `focus` is the safe primitive; wiring it into launch
 is deferred so launch can never be blocked on an un-granted permission.)
 
@@ -363,11 +375,13 @@ Note: `cardctl` only reads `paths`/`sessionId`; the rest are for the board/graph
   `source` domain key, `lastActive` recency timestamp, `sessions` history with resume resolution) + a
   brief human listing; tested for shape/fields/multi-vault.
 - ✅ `focus` — raises a card's VS Code window. Prefers Hammerspoon focus-by-id (matches the window whose
-  slug == the card's), falling back to `osascript`/System Events AXRaise-by-title; best-effort, reports
-  cleanly if Hammerspoon is unavailable and Accessibility permission is missing. Tested with both mocked.
-- ✅ `windows` — lists open VS Code windows (via Hammerspoon) mapped to cards; `--json` emits
-  `{available, windows:[…]}` so the board distinguishes "no windows" from "engine unavailable" (exits 0
-  either way). Powers the board's session-panel v2. Tested with the `hs` subprocess mocked.
+  slug == the card's); upgrades to a workspace reopen when the window is open on another Mission Control
+  space (#47); falls back to `osascript`/System Events AXRaise-by-title; best-effort, reports cleanly if
+  Hammerspoon is unavailable and Accessibility permission is missing. Tested with all engines mocked.
+- ✅ `windows` — lists open VS Code windows mapped to cards: `code --status` supplies the all-spaces window
+  list (#47), Hammerspoon overlays ids where visible (null id off-space); `--json` emits
+  `{available, windows:[…]}` so the board distinguishes "no windows" from "both engines unavailable"
+  (exits 0 either way). Powers the board's session-panel v2. Tested with both subprocesses mocked.
 - ✅ **pytest suite** (`tests/`) — 61 hermetic tests across all commands + the deploy merges.
 
 ## Not yet built (next)
