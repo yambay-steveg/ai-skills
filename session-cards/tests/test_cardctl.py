@@ -1239,6 +1239,7 @@ def test_focus_builds_osascript_with_card_title(cc, tmp_path, monkeypatch, capsy
         calls["argv"] = argv           # the AppleScript (osascript) call
         return R()
     monkeypatch.setattr(cc.subprocess, "run", fake_run)
+    monkeypatch.setattr(cc, "vscode_status_windows", lambda: [])  # window not open
     cc.cmd_focus(NS(card=str(card)))
     assert calls["argv"][0] == cc.OSASCRIPT
     assert calls["argv"][1] == "-e"
@@ -1264,6 +1265,9 @@ def test_focus_failure_is_reported_not_raised(cc, tmp_path, monkeypatch, capsys)
         R.stderr = "not authorized to send Apple events"
         return R()
     monkeypatch.setattr(cc.subprocess, "run", fake_run)
+    def no_code():
+        raise cc.CodeUnavailable("code (VS Code CLI) not found")
+    monkeypatch.setattr(cc, "vscode_status_windows", no_code)
     cc.cmd_focus(NS(card=str(card)))  # must not raise
     err = capsys.readouterr().err
     assert "could not raise the window" in err
@@ -1466,18 +1470,15 @@ def test_windows_json_engine_unavailable_is_available_false(cc, tmp_path, monkey
     assert out["error"]
 
 
-# ── vscode_status_windows (`code --status` subprocess mocked) ───────────────────
+# ── vscode_status_windows / _run_code (`code` CLI mocked) ───────────────────────
 def _fake_code_status(monkeypatch, cc, *, stdout="", stderr="", returncode=0, raises=None):
-    """Monkeypatch subprocess.run as `code --status` would behave."""
-    def fake_run(argv, **kw):
-        assert argv[0] == cc.CODE and argv[1] == "--status"
+    """Monkeypatch _run_code as `code --status` would behave."""
+    def fake_run_code(argv_tail, timeout):
+        assert argv_tail == ["--status"]
         if raises is not None:
             raise raises
-        class R:
-            pass
-        R.stdout, R.stderr, R.returncode = stdout, stderr, returncode
-        return R()
-    monkeypatch.setattr(cc.subprocess, "run", fake_run)
+        return stdout, stderr, returncode
+    monkeypatch.setattr(cc, "_run_code", fake_run_code)
 
 
 def test_vscode_status_windows_parses_window_lines(cc, monkeypatch):
@@ -1499,8 +1500,9 @@ def test_vscode_status_windows_empty_when_no_windows(cc, monkeypatch):
     assert cc.vscode_status_windows() == []
 
 
-def test_vscode_status_windows_raises_on_missing_binary(cc, monkeypatch):
-    _fake_code_status(monkeypatch, cc, raises=FileNotFoundError())
+def test_vscode_status_windows_propagates_engine_failure(cc, monkeypatch):
+    _fake_code_status(monkeypatch, cc,
+                      raises=cc.CodeUnavailable("code (VS Code CLI) not found"))
     with pytest.raises(cc.CodeUnavailable):
         cc.vscode_status_windows()
 
@@ -1509,6 +1511,58 @@ def test_vscode_status_windows_raises_on_nonzero_exit(cc, monkeypatch):
     _fake_code_status(monkeypatch, cc, returncode=1, stderr="boom")
     with pytest.raises(cc.CodeUnavailable):
         cc.vscode_status_windows()
+
+
+def test_run_code_raises_on_missing_binary(cc, monkeypatch):
+    def fake_popen(argv, **kw):
+        raise FileNotFoundError()
+    monkeypatch.setattr(cc.subprocess, "Popen", fake_popen)
+    with pytest.raises(cc.CodeUnavailable):
+        cc._run_code(["--status"], timeout=5)
+
+
+def test_run_code_spawns_own_process_group(cc, monkeypatch):
+    # start_new_session=True is what makes killpg reach the Electron grandchild
+    # the `code` bash wrapper spawns without exec (#49).
+    captured = {}
+
+    class FakeProc:
+        pid = 1
+        returncode = 0
+        def communicate(self, timeout=None):
+            return "out", ""
+
+    def fake_popen(argv, **kw):
+        captured.update(kw)
+        assert argv[0] == cc.CODE and argv[1:] == ["--status"]
+        return FakeProc()
+    monkeypatch.setattr(cc.subprocess, "Popen", fake_popen)
+    assert cc._run_code(["--status"], timeout=5) == ("out", "", 0)
+    assert captured.get("start_new_session") is True
+    assert captured.get("stdin") == cc.subprocess.DEVNULL
+
+
+def test_run_code_kills_process_group_on_timeout(cc, monkeypatch):
+    # The core of #49: on timeout the WHOLE process group must be SIGKILLed
+    # (not just the wrapper), and the post-kill reap must not block.
+    killed = {}
+    calls = {"communicate": 0}
+
+    class FakeProc:
+        pid = 4242
+        returncode = -9
+        def communicate(self, timeout=None):
+            calls["communicate"] += 1
+            if timeout is not None:
+                raise cc.subprocess.TimeoutExpired(cmd="code", timeout=timeout)
+            return "", ""                      # reap after the group is dead
+    monkeypatch.setattr(cc.subprocess, "Popen", lambda *a, **kw: FakeProc())
+    monkeypatch.setattr(cc.os, "killpg",
+                        lambda pgid, sig: killed.update(pgid=pgid, sig=sig))
+    with pytest.raises(cc.CodeUnavailable, match="timed out"):
+        cc._run_code(["--status"], timeout=1)
+    assert killed == {"pgid": 4242, "sig": cc.signal.SIGKILL}
+    assert calls["communicate"] == 2           # timed-out wait + post-kill reap
 
 
 # ── focus: id-upgrade with AppleScript fallback (subprocess mocked) ─────────────
@@ -1554,6 +1608,7 @@ def test_focus_falls_back_to_applescript_when_no_window_matches(cc, tmp_path, mo
             seen["osascript"] = True
         return R()
     monkeypatch.setattr(cc.subprocess, "run", fake_run)
+    monkeypatch.setattr(cc, "vscode_status_windows", lambda: [])  # window not open
     cc.cmd_focus(NS(card=str(card)))
     assert seen["osascript"] is True               # fell back to AXRaise-by-title
     assert "focused" in capsys.readouterr().out
@@ -1575,6 +1630,7 @@ def test_focus_falls_back_to_applescript_when_hs_unavailable(cc, tmp_path, monke
             seen["osascript"] = True
         return R()
     monkeypatch.setattr(cc.subprocess, "run", fake_run)
+    monkeypatch.setattr(cc, "vscode_status_windows", lambda: [])  # window not open
     cc.cmd_focus(NS(card=str(card)))
     assert seen["osascript"] is True               # AppleScript fallback used
     assert "focused" in capsys.readouterr().out
@@ -1600,16 +1656,19 @@ def test_focus_reopens_workspace_for_cross_space_window(cc, tmp_path, monkeypatc
             stdout = ""
         if argv[0] == cc.HS:
             R.stdout = "[]"                        # current space: no match
-        elif argv[0] == cc.CODE and argv[1] == "--status":
-            R.stdout = "|  Window (Board — session-card-board (Workspace))\n"
-        elif argv[0] == cc.CODE:
-            seen["reopen"] = argv                  # the workspace reopen
         elif argv[0] == cc.OSASCRIPT:
             seen["osascript"] = True
         return R()
     monkeypatch.setattr(cc.subprocess, "run", fake_run)
+
+    def fake_run_code(argv_tail, timeout):
+        if argv_tail == ["--status"]:
+            return "|  Window (Board — session-card-board (Workspace))\n", "", 0
+        seen["reopen"] = argv_tail                 # the workspace reopen
+        return "", "", 0
+    monkeypatch.setattr(cc, "_run_code", fake_run_code)
     cc.cmd_focus(NS(card=str(card)))
-    assert seen["reopen"] == [cc.CODE, str(ws)]
+    assert seen["reopen"] == [str(ws)]
     assert seen["osascript"] is False              # never reached AppleScript
     assert "another space" in capsys.readouterr().out
 
@@ -1632,14 +1691,17 @@ def test_focus_does_not_reopen_when_window_not_open(cc, tmp_path, monkeypatch, c
             stdout = ""
         if argv[0] == cc.HS:
             R.stdout = "[]"
-        elif argv[0] == cc.CODE and argv[1] == "--status":
-            R.stdout = "|  Window (Other — other-card (Workspace))\n"
-        elif argv[0] == cc.CODE:
-            seen["reopen"] = True
         elif argv[0] == cc.OSASCRIPT:
             seen["osascript"] = True
         return R()
     monkeypatch.setattr(cc.subprocess, "run", fake_run)
+
+    def fake_run_code(argv_tail, timeout):
+        if argv_tail == ["--status"]:
+            return "|  Window (Other — other-card (Workspace))\n", "", 0
+        seen["reopen"] = True
+        return "", "", 0
+    monkeypatch.setattr(cc, "_run_code", fake_run_code)
     cc.cmd_focus(NS(card=str(card)))
     assert seen["reopen"] is False
     assert seen["osascript"] is True
