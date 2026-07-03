@@ -31,16 +31,18 @@ Commands:
                                     card's workspace to raise it there; falls back to AppleScript
                                     AXRaise-by-title. Best-effort, never crashes.
   cardctl windows [--json]          List the open VS Code windows mapped to their cards.
-                                    `code --status` supplies the list (all Mission Control
-                                    spaces); Hammerspoon adds window ids where visible (current
-                                    space — otherwise id is null). --json emits {available,
-                                    windows:[…]} so the board can tell "no windows" apart from
-                                    "both engines unavailable".
+                                    Zero-spawn fast path (VS Code's storage.json cross-checked
+                                    against CGWindowList — all Mission Control spaces, ids by
+                                    geometry); falls back to `code --status` + Hammerspoon id
+                                    overlay when persisted state disagrees with the live window
+                                    count. --json emits {available, windows:[…]} so the board can
+                                    tell "no windows" apart from "every engine unavailable".
 
 macOS only for now. `code` and `open` are resolved by absolute path (works under GUI launchers
 like Obsidian Shell Commands, which run with a minimal PATH).
 """
 import argparse
+import ctypes
 import datetime
 import glob
 import json
@@ -51,6 +53,7 @@ import signal
 import subprocess
 import sys
 import time
+from urllib.parse import unquote as percent_decode, urlparse
 from pathlib import Path
 
 
@@ -1411,9 +1414,14 @@ def cmd_list(args):
 #   * Hammerspoon (`hs -c '<lua>'`) — OS window ids + focus state, but it rides the
 #     macOS Accessibility API, which only exposes windows on the CURRENTLY ACTIVE
 #     space(s). Windows parked on other spaces are invisible to it.
-# `windows` takes VS Code's list as authoritative and overlays ids/focus from
-# Hammerspoon where visible; `focus` upgrades from focus-by-id to a workspace
-# reopen when the target window is open but on another space.
+# The FAST PATH avoids spawning anything (#51): VS Code's persisted window state
+# (storage.json) names what is open, and the window server (CGWindowList via
+# ctypes) confirms how many windows actually exist across all spaces — see
+# native_windows(). The spawned engines above are the fallback when the two
+# disagree (state is not flushed on window close) or can't be read.
+# `windows` prefers native → code --status + Hammerspoon overlay; `focus`
+# upgrades from focus-by-id to a workspace reopen when the target window is
+# open but on another space.
 # Window titles are what `build_workspace` stamps: "<card title> — <rootName>"
 # (VS Code shows "<title> — <rootName> (Workspace)", plus " — Modified" when the
 # window is dirty). The "<rootName>" segment is the card slug (== the
@@ -1498,6 +1506,200 @@ def vscode_status_windows():
         if m:
             titles.append(m.group(1))
     return titles
+
+
+# ── Native (zero-spawn) window enumeration ─────────────────────────────────────
+# VS Code's own persisted window state, cross-checked against the window server.
+
+# Where VS Code (stable) persists windowsState.openedWindows.
+VSCODE_STORAGE = (Path.home()
+                  / "Library/Application Support/Code/User/globalStorage/storage.json")
+
+
+class NativeUnavailable(Exception):
+    """The zero-spawn enumeration couldn't answer (storage.json unreadable,
+    CGWindowList failed, or persisted state disagrees with the live window
+    count — i.e. a window closed since VS Code last flushed its state).
+    Callers fall back to the spawned engines. Carries a short reason."""
+
+
+def _cg_code_windows():
+    """Live VS Code windows straight from the window server:
+    CGWindowListCopyWindowInfo via ctypes — every Mission Control space, a few
+    milliseconds, no subprocess, no extra permissions (window TITLES would need
+    Screen Recording, so only ids and bounds are read). VS Code's phantom
+    window-server entries (native-tabs menubar strips, screen-width × ~30 pt)
+    are filtered by height — no real editor window is that short. Returns
+    [{"id": int, "bounds": (x, y, w, h)}]; raises NativeUnavailable on any
+    failure."""
+    try:
+        CG = ctypes.CDLL(
+            "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        CF = ctypes.CDLL(
+            "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+        CF.CFStringCreateWithCString.restype = ctypes.c_void_p
+        CF.CFStringCreateWithCString.argtypes = (ctypes.c_void_p, ctypes.c_char_p,
+                                                 ctypes.c_uint32)
+        CF.CFArrayGetCount.restype = ctypes.c_long
+        CF.CFArrayGetCount.argtypes = (ctypes.c_void_p,)
+        CF.CFArrayGetValueAtIndex.restype = ctypes.c_void_p
+        CF.CFArrayGetValueAtIndex.argtypes = (ctypes.c_void_p, ctypes.c_long)
+        CF.CFDictionaryGetValue.restype = ctypes.c_void_p
+        CF.CFDictionaryGetValue.argtypes = (ctypes.c_void_p, ctypes.c_void_p)
+        CF.CFStringGetCString.restype = ctypes.c_bool
+        CF.CFStringGetCString.argtypes = (ctypes.c_void_p, ctypes.c_char_p,
+                                          ctypes.c_long, ctypes.c_uint32)
+        CF.CFNumberGetValue.restype = ctypes.c_bool
+        CF.CFNumberGetValue.argtypes = (ctypes.c_void_p, ctypes.c_int,
+                                        ctypes.c_void_p)
+        CF.CFRelease.argtypes = (ctypes.c_void_p,)
+        CG.CGWindowListCopyWindowInfo.restype = ctypes.c_void_p
+        CG.CGWindowListCopyWindowInfo.argtypes = (ctypes.c_uint32, ctypes.c_uint32)
+
+        UTF8 = 0x08000100        # kCFStringEncodingUTF8
+        F64 = 6                  # kCFNumberFloat64Type
+
+        keys = {k: CF.CFStringCreateWithCString(None, k.encode(), UTF8)
+                for k in ("kCGWindowOwnerName", "kCGWindowLayer",
+                          "kCGWindowNumber", "kCGWindowBounds",
+                          "X", "Y", "Width", "Height")}
+
+        def num(ref):
+            v = ctypes.c_double()
+            ok = ref and CF.CFNumberGetValue(ref, F64, ctypes.byref(v))
+            return v.value if ok else None
+
+        def string(ref):
+            buf = ctypes.create_string_buffer(256)
+            if ref and CF.CFStringGetCString(ref, buf, 256, UTF8):
+                return buf.value.decode("utf-8", "replace")
+            return None
+
+        arr = CG.CGWindowListCopyWindowInfo(0, 0)  # kCGWindowListOptionAll
+        if not arr:
+            raise NativeUnavailable("CGWindowListCopyWindowInfo returned NULL")
+        wins = []
+        try:
+            for i in range(CF.CFArrayGetCount(arr)):
+                d = CF.CFArrayGetValueAtIndex(arr, i)
+                owner = string(CF.CFDictionaryGetValue(d, keys["kCGWindowOwnerName"]))
+                if owner != "Code":
+                    continue
+                if num(CF.CFDictionaryGetValue(d, keys["kCGWindowLayer"])) != 0:
+                    continue
+                b = CF.CFDictionaryGetValue(d, keys["kCGWindowBounds"])
+                wid = num(CF.CFDictionaryGetValue(d, keys["kCGWindowNumber"]))
+                if not b or wid is None:
+                    continue
+                x = num(CF.CFDictionaryGetValue(b, keys["X"]))
+                y = num(CF.CFDictionaryGetValue(b, keys["Y"]))
+                w = num(CF.CFDictionaryGetValue(b, keys["Width"]))
+                h = num(CF.CFDictionaryGetValue(b, keys["Height"]))
+                if h is None or h < 100:   # phantom menubar strips are ~30 pt
+                    continue
+                wins.append({"id": int(wid), "bounds": (x, y, w, h)})
+        finally:
+            CF.CFRelease(arr)
+            for ref in keys.values():
+                CF.CFRelease(ref)
+        return wins
+    except NativeUnavailable:
+        raise
+    except Exception as e:  # dyld/ctypes failures are varied — degrade, never crash
+        raise NativeUnavailable(f"CGWindowList failed: {e}")
+
+
+def _file_uri_to_path(uri):
+    """file:// URI → filesystem path (percent-decoded); None for anything else."""
+    if not uri or not uri.startswith("file://"):
+        return None
+    return percent_decode(urlparse(uri).path) or None
+
+
+def _vscode_state_windows():
+    """Open-window candidates from VS Code's own persisted state (storage.json →
+    windowsState.openedWindows): what each window has open, plus its
+    last-flushed geometry. VS Code flushes within ~2s of a window OPENING but
+    NOT on close, so this list can over-report — callers must cross-check the
+    count against the live window server (native_windows does). Returns
+    [{"slug": str|None, "bounds": (x, y, w, h)|None}]; slug comes from the
+    workspace filename (a card's workspace is <slug>.code-workspace) or a
+    folder window's basename. Raises NativeUnavailable when unreadable."""
+    try:
+        data = json.loads(VSCODE_STORAGE.read_text())
+    except (OSError, ValueError) as e:
+        raise NativeUnavailable(f"storage.json unreadable: {e}")
+    opened = (data.get("windowsState") or {}).get("openedWindows")
+    if not isinstance(opened, list):
+        raise NativeUnavailable("storage.json has no windowsState.openedWindows")
+    out = []
+    for w in opened:
+        if not isinstance(w, dict):
+            continue
+        slug = None
+        ws_uri = (w.get("workspaceIdentifier") or {}).get("configURIPath")
+        p = _file_uri_to_path(ws_uri or w.get("folder"))
+        if p and ws_uri:
+            slug = Path(p).stem if p.endswith(".code-workspace") else None
+        elif p:
+            slug = Path(p).name  # folder window → activity-folder basename
+        ui = w.get("uiState") or {}
+        bounds = None
+        if all(isinstance(ui.get(k), (int, float)) for k in
+               ("x", "y", "width", "height")):
+            bounds = (float(ui["x"]), float(ui["y"]),
+                      float(ui["width"]), float(ui["height"]))
+        out.append({"slug": slug, "bounds": bounds})
+    return out
+
+
+def _card_title(card, slug):
+    """Card `title:` for synthesising a window title on the native path —
+    tolerant, because one malformed card must not take `windows` down (read_card
+    die()s). Falls back to the slug."""
+    try:
+        fm, _ = read_card(card)
+        return unquote(fm.get("title") or slug)
+    except (OSError, SystemExit):
+        return slug
+
+
+def native_windows():
+    """The zero-spawn `windows` fast path (#51). VS Code's persisted state names
+    WHAT is open (workspace → slug); the window server confirms HOW MANY windows
+    actually exist, live, across all spaces. When the counts agree the state
+    list is current and rows are emitted directly — a few ms, no subprocess, no
+    Hammerspoon. When they disagree (a window closed since the last flush —
+    closes aren't flushed) this raises NativeUnavailable and the caller falls
+    back to the spawned engines. Window ids attach by matching the state's
+    last-flushed geometry to live bounds (exact and unique), else null. Titles
+    are synthesised in the same "<card title> — <slug> (Workspace)" form VS Code
+    renders, so consumers (and slug_from_window_title) see one format."""
+    state = _vscode_state_windows()
+    live = _cg_code_windows()
+    if len(state) != len(live):
+        raise NativeUnavailable(
+            f"persisted state lists {len(state)} windows but the window server "
+            f"has {len(live)} (window closed since the last state flush?)")
+    by_bounds = {}
+    for w in live:
+        by_bounds.setdefault(w["bounds"], []).append(w)
+    by_stem = stem_to_card()
+    rows = []
+    for s in state:
+        card = by_stem.get(s["slug"]) if s["slug"] else None
+        match = by_bounds.get(s["bounds"], [])
+        win = match[0] if len(match) == 1 else None  # moved/ambiguous → no id
+        if card:
+            title = f"{_card_title(card, s['slug'])} — {s['slug']} (Workspace)"
+        else:
+            title = s["slug"] or "(empty window)"
+        rows.append({
+            "id": win["id"] if win else None, "title": title,
+            "slug": s["slug"],
+            "filePath": str(card.resolve()) if card else None,
+        })
+    return rows
 
 
 def _run_hs(lua):
@@ -1585,17 +1787,13 @@ def stem_to_card():
     return out
 
 
-def cmd_windows(args):
-    """List the open VS Code windows mapped to their cards. `code --status` is the
-    authoritative window list (it sees all Mission Control spaces — #47); Hammerspoon
-    overlays each window's OS id where the Accessibility API can see it (current
-    space only), so a window on another space has `id: null`. Either engine alone
-    still yields a usable list. The board reads `--json` to drive its session panel
-    (open vs recently-closed). The JSON is an OBJECT, not a bare array, so the board
-    can distinguish "no windows open" (available:true, windows:[]) from "both engines
-    unavailable" (available:false) — in which case we still exit 0 so the board
-    degrades rather than hard-erroring."""
-    titles, errs = None, []
+def _spawned_windows_rows(errs):
+    """The spawned-engine fallback for `windows`: `code --status` supplies the
+    all-spaces title list, Hammerspoon overlays ids/focus where the
+    Accessibility API can see them (current space — #47). Either engine alone
+    still yields a usable list; returns None (appending reasons to `errs`) only
+    when both are down."""
+    titles = None
     try:
         titles = vscode_status_windows()
     except CodeUnavailable as e:
@@ -1605,14 +1803,8 @@ def cmd_windows(args):
     except HsUnavailable as e:
         hs_wins = []
         errs.append(f"hammerspoon: {e}")
-        if titles is None:  # both engines down — degrade, exit 0
-            msg = "; ".join(errs)
-            if args.json:
-                print(json.dumps({"available": False, "error": msg, "windows": []},
-                                 ensure_ascii=False))
-            else:
-                print(f"cardctl: windows unavailable: {msg}", file=sys.stderr)
-            return
+        if titles is None:
+            return None
     if titles is None:
         # VS Code CLI down — Hammerspoon-only view (current space's windows).
         titles = [w["title"] for w in hs_wins]
@@ -1636,6 +1828,40 @@ def cmd_windows(args):
             "slug": slug,
             "filePath": str(card.resolve()) if card else None,
         })
+    return rows
+
+
+def cmd_windows(args):
+    """List the open VS Code windows mapped to their cards. Engine order (#51):
+
+    1. native_windows() — zero-spawn (storage.json × CGWindowList), all Mission
+       Control spaces, a few ms. Used whenever VS Code's persisted state agrees
+       with the live window count.
+    2. `code --status` (all spaces, seconds) with Hammerspoon overlaying window
+       ids where the Accessibility API can see them (current space only — #47);
+       either spawned engine alone still yields a usable list.
+
+    The board reads `--json` to drive its session panel (open vs
+    recently-closed). The JSON is an OBJECT, not a bare array, so the board can
+    distinguish "no windows open" (available:true, windows:[]) from "every
+    engine unavailable" (available:false) — in which case we still exit 0 so
+    the board degrades rather than hard-erroring."""
+    errs = []
+    try:
+        rows = native_windows()
+    except NativeUnavailable as e:
+        errs.append(f"native: {e}")
+        rows = None
+    if rows is None:
+        rows = _spawned_windows_rows(errs)
+        if rows is None:  # every engine down — degrade, exit 0
+            msg = "; ".join(errs)
+            if args.json:
+                print(json.dumps({"available": False, "error": msg, "windows": []},
+                                 ensure_ascii=False))
+            else:
+                print(f"cardctl: windows unavailable: {msg}", file=sys.stderr)
+            return
     if args.json:
         print(json.dumps({"available": True, "windows": rows}, ensure_ascii=False))
     else:
@@ -1716,10 +1942,14 @@ def cmd_focus(args):
     # Cross-space upgrade: only when VS Code confirms the window is actually open
     # (never open a closed workspace from `focus`) and its cached workspace file
     # exists to retarget. `code <ws>` on an open workspace raises, never duplicates.
+    # Same engine order as `windows`: native fast path, then `code --status`.
     try:
-        open_slugs = {slug_from_window_title(t) for t in vscode_status_windows()}
-    except CodeUnavailable:
-        open_slugs = set()
+        open_slugs = {r["slug"] for r in native_windows()}
+    except NativeUnavailable:
+        try:
+            open_slugs = {slug_from_window_title(t) for t in vscode_status_windows()}
+        except CodeUnavailable:
+            open_slugs = set()
     ws = CACHE / f"{slug}.code-workspace"
     if slug in open_slugs and ws.exists():
         try:
@@ -2175,11 +2405,11 @@ def main():
     pf.set_defaults(func=cmd_focus)
 
     pwin = sub.add_parser("windows", help="list open VS Code windows mapped to cards "
-                                          "(code --status + Hammerspoon; --json for "
-                                          "the board)")
+                                          "(zero-spawn native fast path; code --status "
+                                          "+ Hammerspoon fallback; --json for the board)")
     pwin.add_argument("--json", action="store_true",
                       help="emit {available, windows:[…]} so the board can tell "
-                           "'no windows' from 'both engines unavailable'")
+                           "'no windows' from 'every engine unavailable'")
     pwin.set_defaults(func=cmd_windows)
 
     pw = sub.add_parser("which", help="which card owns a folder (reverse lookup; for the session-start hook)")

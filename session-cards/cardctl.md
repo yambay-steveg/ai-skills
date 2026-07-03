@@ -23,7 +23,7 @@ cardctl set <card.md> [--area … --program … --raised-at … --customer … -
 cardctl lint [card.md] [--json]   # check cards for model drift (/card-model linter); --json = findings array
 cardctl list [--json]             # list all cards across the Cards/ folders; --json = the board's read interface
 cardctl focus  <card.md>          # bring the card's VS Code window to the front (Hammerspoon focus-by-id; cross-space workspace reopen; AppleScript fallback)
-cardctl windows [--json]          # list open VS Code windows mapped to cards (code --status + Hammerspoon ids); --json = board read interface
+cardctl windows [--json]          # list open VS Code windows mapped to cards (zero-spawn native fast path; code --status + Hammerspoon fallback); --json = board read interface
 cardctl reconcile [--apply]       # file folders of cards marked archived (R9; done is left in place)
 cardctl which [folder] [--record] # which card owns a folder (reverse lookup; powers the SessionStart hook)
 cardctl deploy <work|personal|all> [--apply]  # push the canonical surfaces to a vault + ~/bin (R10)
@@ -128,23 +128,37 @@ the board's `cardSource` already consumes `list --json` as its single read path 
 never parses card markdown), so the fly-out Session history (slice 6) needs no second process spawn
 or per-card fetch.
 
-## `windows` — open VS Code windows mapped to cards (code --status + Hammerspoon)
+## `windows` — open VS Code windows mapped to cards (native fast path + spawned fallback)
 
-`cardctl windows --json` enumerates the open VS Code windows and maps each to its card. Two engines with
-complementary blind spots (#47):
+`cardctl windows --json` enumerates the open VS Code windows and maps each to its card. Engine order (#51):
 
-- **`code --status`** (authoritative list) — VS Code reports its *own* windows, so it sees every window on
-  **every Mission Control space**. Titles only, no OS window ids.
-- **Hammerspoon** (`hs -c '<lua>'` runs Lua in the running Hammerspoon and prints the result) — supplies OS
-  window **ids** and focus state, but it rides the macOS Accessibility API, which only exposes windows on
-  the **currently active space(s)**. A window parked on another space gets `"id": null`.
+1. **Native fast path (zero-spawn, ~90 ms, all Mission Control spaces).** Two reads, cross-checked:
+   - **`storage.json`** (`~/Library/Application Support/Code/User/globalStorage/storage.json` →
+     `windowsState.openedWindows`) — VS Code's own persisted state names *what* each window has open; a
+     card's workspace is `<slug>.code-workspace`, so the slug falls straight out of the filename. Flushed
+     within ~2 s of a window **opening**, but **not on close** — alone it would over-report.
+   - **CGWindowList** (`CGWindowListCopyWindowInfo` via ctypes, no pyobjc, no subprocess, no Screen
+     Recording permission for ids/bounds) — the live truth for *how many* real VS Code windows exist,
+     across every space. Phantom window-server entries (native-tabs menubar strips, screen-width × ~30 pt)
+     are filtered by height.
+
+   When the two counts agree, the state list is current: rows are emitted directly, with OS window **ids**
+   attached by matching the state's per-window geometry to live CG bounds (exact + unique — this maps ids
+   even for windows on other spaces, which Hammerspoon never could). Titles are synthesised in the same
+   `"<card title> — <slug> (Workspace)"` form VS Code renders. When the counts disagree (a window closed
+   since the last flush), the fast path refuses and the spawned fallback re-syncs. Known edge: a close and
+   an open inside the same ~2 s flush window can pass the count check with briefly wrong composition;
+   self-heals on the next flush.
+2. **Spawned fallback: `code --status` + Hammerspoon.** `code --status` reports every window (all spaces,
+   titles only, seconds — run process-group-safe per #49); Hammerspoon overlays ids/focus where the
+   Accessibility API can see them (current space only — #47). Either alone still yields a usable list
+   (`code --status` down → Hammerspoon's current-space view; Hammerspoon down → all windows with null ids).
 
 Each generated window's title is `"<card title> — <rootName> (Workspace)"` (`build_workspace` stamps the
 `window.title`; VS Code appends ` (Workspace)` and a trailing ` — Modified` when dirty), and the
 `<rootName>` segment is the card **slug** (== the activity-folder basename == the card filename stem).
-`slug_from_window_title` strips those suffixes and takes the substring after the *last* ` — ` separator,
-then we look the slug up against `{stem: card}` across every `Cards/` folder. Ids attach to titles by exact
-match, falling back to slug match (the engines can disagree on the dirty suffix).
+On the fallback path `slug_from_window_title` strips those suffixes and takes the substring after the
+*last* ` — ` separator; the slug is then looked up against `{stem: card}` across every `Cards/` folder.
 
 The JSON is an **object, not a bare array**, so the board can tell *no windows open* from *engines
 unavailable*:
@@ -155,9 +169,8 @@ unavailable*:
               "slug": "session-card-board", "filePath": "/…/session-card-board.md"}, …]}
 ```
 
-`slug`/`filePath` are `null` for an unmatched window (manually-opened folder, or a slug with no card).
-Either engine alone still yields a usable list (`code --status` down → Hammerspoon's current-space view;
-Hammerspoon down → all windows with null ids). Only when **both** fail does it emit
+`slug`/`filePath` are `null` for an unmatched window (manually-opened folder, or a slug with no card);
+`id` is `null` when no engine could pin the OS window. Only when **every** engine fails does it emit
 `{"available": false, "error": "<reason>", "windows": []}` — and it still **exits 0**, so the board reads
 the JSON and degrades rather than treating it as a hard error. Without `--json` it prints a brief human
 listing (`-` in the id column for a null id). This powers the board's session-panel v2 (open vs
@@ -170,7 +183,8 @@ no window-targeting param, so this is the deterministic complement to launch's b
 It prefers a **Hammerspoon focus-by-id**: enumerate the `Code` windows (as `windows` does), find the one
 whose title maps to this card's slug (the card filename stem, stamped into `window.title` by
 `build_workspace`), and focus it by id (`hs.window.get(<id>):focus()`). When Hammerspoon has no match
-(it can't see other Mission Control spaces — #47) but **`code --status` confirms the window is open**, it
+(it can't see other Mission Control spaces — #47) but the window is confirmed open (native fast path,
+falling back to `code --status` — same order as `windows`), it
 upgrades to a **workspace reopen**: `code <cached .code-workspace>` raises the existing window and macOS
 follows it to its space (guarded — `focus` never opens a *closed* workspace). Last resort: drive macOS
 System Events (via `osascript`) — set the `Code` process frontmost and `AXRaise` the window whose title
@@ -378,10 +392,12 @@ Note: `cardctl` only reads `paths`/`sessionId`; the rest are for the board/graph
   slug == the card's); upgrades to a workspace reopen when the window is open on another Mission Control
   space (#47); falls back to `osascript`/System Events AXRaise-by-title; best-effort, reports cleanly if
   Hammerspoon is unavailable and Accessibility permission is missing. Tested with all engines mocked.
-- ✅ `windows` — lists open VS Code windows mapped to cards: `code --status` supplies the all-spaces window
-  list (#47), Hammerspoon overlays ids where visible (null id off-space); `--json` emits
-  `{available, windows:[…]}` so the board distinguishes "no windows" from "both engines unavailable"
-  (exits 0 either way). Powers the board's session-panel v2. Tested with both subprocesses mocked.
+- ✅ `windows` — lists open VS Code windows mapped to cards. Native zero-spawn fast path (#51:
+  storage.json windowsState × CGWindowList via ctypes, ~90 ms, all spaces, ids attached by geometry);
+  falls back to `code --status` (all-spaces titles, #47) + Hammerspoon id overlay when persisted state
+  disagrees with the live window count. `--json` emits `{available, windows:[…]}` so the board
+  distinguishes "no windows" from "every engine unavailable" (exits 0 either way). Powers the board's
+  session-panel v2. Tested with all engines mocked.
 - ✅ **pytest suite** (`tests/`) — 61 hermetic tests across all commands + the deploy merges.
 
 ## Not yet built (next)
