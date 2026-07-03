@@ -1,0 +1,1019 @@
+<title>The Session Card Model</title>
+<style>
+	:root {
+		--paper: #f6f8f8;
+		--panel: #ffffff;
+		--panel-2: #eef2f2;
+		--ink: #182026;
+		--muted: #566069;
+		--faint: #8b959d;
+		--line: #e0e6e8;
+		--line-strong: #cdd5d8;
+
+		--teal: #0e9aa8;
+		--teal-strong: #0b7e8a;
+		--teal-soft: #e0f2f4;
+
+		--violet: #7c5cff; /* hierarchy / program */
+		--amber: #c26a09; /* provenance / forum + customer edge */
+		--amber-soft: #fbf0dd;
+		--blue: #2563eb; /* session */
+		--blue-soft: #e6edfd;
+
+		--st-backlog: #64748b;
+		--st-inprogress: #2563eb;
+		--st-onhold: #d97706;
+		--st-done: #16a34a;
+		--st-archived: #e11d48;
+
+		--mono: ui-monospace, 'SF Mono', 'SFMono-Regular', Menlo, 'Cascadia Code', 'Roboto Mono',
+			monospace;
+		--sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+
+		--r: 10px;
+		--r-sm: 6px;
+		--shadow: 0 1px 2px rgba(20, 30, 40, 0.05), 0 6px 20px rgba(20, 30, 40, 0.06);
+		--maxw: 960px;
+	}
+
+	* {
+		box-sizing: border-box;
+	}
+	html {
+		-webkit-text-size-adjust: 100%;
+	}
+	body {
+		margin: 0;
+		background: var(--paper);
+		color: var(--ink);
+		font-family: var(--sans);
+		font-size: 16px;
+		line-height: 1.6;
+		letter-spacing: -0.003em;
+		/* faint blueprint grid on the ground */
+		background-image:
+			linear-gradient(rgba(14, 154, 168, 0.035) 1px, transparent 1px),
+			linear-gradient(90deg, rgba(14, 154, 168, 0.035) 1px, transparent 1px);
+		background-size: 26px 26px;
+	}
+
+	.wrap {
+		max-width: var(--maxw);
+		margin: 0 auto;
+		padding: 0 24px;
+	}
+
+	/* ---- shared type ---- */
+	.eyebrow {
+		font-family: var(--mono);
+		font-size: 12px;
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+		color: var(--teal-strong);
+		font-weight: 600;
+		margin: 0 0 12px;
+	}
+	h1,
+	h2,
+	h3 {
+		text-wrap: balance;
+		letter-spacing: -0.02em;
+		line-height: 1.12;
+		margin: 0;
+	}
+	code,
+	.mono {
+		font-family: var(--mono);
+	}
+	p {
+		margin: 0 0 14px;
+		max-width: 68ch;
+	}
+	.lede {
+		font-size: 19px;
+		color: var(--muted);
+		max-width: 60ch;
+	}
+
+	/* ---- hero ---- */
+	header.hero {
+		padding: 76px 0 40px;
+		border-bottom: 1px solid var(--line);
+		background: linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0));
+	}
+	.hero h1 {
+		font-size: clamp(34px, 6vw, 56px);
+		font-weight: 700;
+	}
+	.hero h1 .thin {
+		color: var(--faint);
+		font-weight: 400;
+	}
+	.hero .lede {
+		margin-top: 20px;
+	}
+
+	/* the primitive equation */
+	.equation {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: stretch;
+		gap: 12px;
+		margin-top: 34px;
+	}
+	.prim {
+		flex: 1 1 190px;
+		background: var(--panel);
+		border: 1px solid var(--line);
+		border-radius: var(--r);
+		padding: 16px 16px 15px;
+		box-shadow: var(--shadow);
+		position: relative;
+	}
+	.prim .k {
+		font-family: var(--mono);
+		font-size: 12px;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: var(--faint);
+		display: block;
+		margin-bottom: 6px;
+	}
+	.prim .v {
+		font-weight: 650;
+		font-size: 17px;
+	}
+	.prim .d {
+		color: var(--muted);
+		font-size: 13.5px;
+		margin-top: 4px;
+		line-height: 1.5;
+	}
+	.prim.context {
+		border-top: 3px solid var(--teal);
+	}
+	.prim.session {
+		border-top: 3px solid var(--blue);
+	}
+	.prim.card {
+		border-top: 3px solid var(--ink);
+	}
+	.op {
+		align-self: center;
+		font-family: var(--mono);
+		font-size: 22px;
+		color: var(--faint);
+		flex: 0 0 auto;
+		padding: 0 2px;
+	}
+
+	/* ---- sections ---- */
+	section {
+		padding: 54px 0;
+		border-bottom: 1px solid var(--line);
+	}
+	.sec-head {
+		margin-bottom: 28px;
+	}
+	.sec-head h2 {
+		font-size: clamp(23px, 3.4vw, 30px);
+		font-weight: 680;
+	}
+	.sec-head p {
+		margin-top: 12px;
+		color: var(--muted);
+	}
+
+	/* ---- layer stack ---- */
+	.layers {
+		display: flex;
+		flex-direction: column;
+		gap: 0;
+		border: 1px solid var(--line);
+		border-radius: var(--r);
+		overflow: hidden;
+		background: var(--panel);
+		box-shadow: var(--shadow);
+	}
+	.layer {
+		display: grid;
+		grid-template-columns: 132px 1fr;
+		gap: 18px;
+		align-items: baseline;
+		padding: 16px 20px;
+		border-bottom: 1px solid var(--line);
+	}
+	.layer:last-child {
+		border-bottom: 0;
+	}
+	.layer .lname {
+		font-family: var(--mono);
+		font-weight: 650;
+		font-size: 14px;
+		display: flex;
+		align-items: center;
+		gap: 9px;
+	}
+	.layer .dot {
+		width: 9px;
+		height: 9px;
+		border-radius: 50%;
+		flex: 0 0 auto;
+	}
+	.layer .ldesc {
+		color: var(--muted);
+		font-size: 14.5px;
+	}
+	.layer .ldesc b {
+		color: var(--ink);
+		font-weight: 620;
+	}
+	.layer .kind {
+		font-family: var(--mono);
+		font-size: 11px;
+		color: var(--faint);
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+	}
+	.layer.is-card {
+		background: var(--teal-soft);
+	}
+	.pipe {
+		text-align: center;
+		color: var(--line-strong);
+		font-family: var(--mono);
+		line-height: 0.4;
+		padding: 2px 0;
+	}
+	.note-inline {
+		margin-top: 14px;
+		font-size: 13.5px;
+		color: var(--muted);
+		font-family: var(--mono);
+	}
+	.note-inline b {
+		color: var(--teal-strong);
+	}
+
+	/* ---- annotated card ---- */
+	.card-lab {
+		display: grid;
+		grid-template-columns: 1.15fr 1fr;
+		gap: 26px;
+		align-items: start;
+	}
+	.mdcard {
+		background: #0f1519;
+		color: #d7dee2;
+		border-radius: var(--r);
+		border: 1px solid #1e2a30;
+		font-family: var(--mono);
+		font-size: 13px;
+		line-height: 1.72;
+		overflow-x: auto;
+		box-shadow: var(--shadow);
+		transition: transform 0.18s ease;
+	}
+	.mdcard:hover {
+		transform: translateY(-2px);
+	}
+	.mdcard .bar {
+		display: flex;
+		align-items: center;
+		gap: 7px;
+		padding: 10px 14px;
+		border-bottom: 1px solid #1e2a30;
+		background: #0b1013;
+		border-radius: var(--r) var(--r) 0 0;
+	}
+	.mdcard .bar i {
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+		background: #2b3a42;
+		display: inline-block;
+	}
+	.mdcard .bar .fn {
+		margin-left: 8px;
+		color: #7f8d95;
+		font-size: 12px;
+	}
+	.mdcard pre {
+		margin: 0;
+		padding: 16px 18px;
+		white-space: pre;
+	}
+	.mdcard .fence {
+		color: #4d5c64;
+	}
+	.mdcard .key {
+		color: #6fd0da;
+	}
+	.mdcard .str {
+		color: #d7dee2;
+	}
+	.mdcard .link {
+		color: #a992ff;
+	}
+	.mdcard .tag {
+		color: #e0a45c;
+	}
+	.mdcard .sid {
+		color: #6ea8ff;
+	}
+	.mdcard .path {
+		color: #9fb0b8;
+	}
+	.mdcard .h {
+		color: #7f8d95;
+	}
+	.mdcard .cur {
+		color: #16a34a;
+	}
+	.mdcard mark {
+		background: rgba(14, 154, 168, 0.22);
+		color: inherit;
+		border-radius: 3px;
+		padding: 0 2px;
+	}
+
+	.annot {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+	.an {
+		border-left: 3px solid var(--line-strong);
+		padding: 2px 0 2px 14px;
+	}
+	.an .field {
+		font-family: var(--mono);
+		font-size: 12.5px;
+		font-weight: 650;
+	}
+	.an .txt {
+		font-size: 13.5px;
+		color: var(--muted);
+		margin-top: 2px;
+		line-height: 1.5;
+	}
+	.an.c-status {
+		border-color: var(--st-inprogress);
+	}
+	.an.c-status .field {
+		color: var(--st-inprogress);
+	}
+	.an.c-prog {
+		border-color: var(--violet);
+	}
+	.an.c-prog .field {
+		color: var(--violet);
+	}
+	.an.c-forum {
+		border-color: var(--amber);
+	}
+	.an.c-forum .field {
+		color: var(--amber);
+	}
+	.an.c-tags {
+		border-color: var(--teal);
+	}
+	.an.c-tags .field {
+		color: var(--teal-strong);
+	}
+	.an.c-paths {
+		border-color: var(--teal);
+	}
+	.an.c-paths .field {
+		color: var(--teal-strong);
+	}
+	.an.c-sess {
+		border-color: var(--blue);
+	}
+	.an.c-sess .field {
+		color: var(--blue);
+	}
+
+	/* ---- storage lanes ---- */
+	.lanes {
+		display: grid;
+		grid-template-columns: repeat(3, 1fr);
+		gap: 16px;
+	}
+	.lane {
+		background: var(--panel);
+		border: 1px solid var(--line);
+		border-radius: var(--r);
+		padding: 18px 18px 20px;
+		box-shadow: var(--shadow);
+		display: flex;
+		flex-direction: column;
+	}
+	.lane .top {
+		display: flex;
+		align-items: center;
+		gap: 9px;
+		margin-bottom: 4px;
+	}
+	.lane .badge {
+		font-family: var(--mono);
+		font-size: 10.5px;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		padding: 3px 8px;
+		border-radius: 20px;
+	}
+	.lane.vault .badge {
+		background: var(--teal-soft);
+		color: var(--teal-strong);
+	}
+	.lane.repos .badge {
+		background: var(--panel-2);
+		color: var(--muted);
+	}
+	.lane.tx .badge {
+		background: var(--blue-soft);
+		color: var(--blue);
+	}
+	.lane h3 {
+		font-size: 16px;
+		font-weight: 640;
+		margin-top: 8px;
+	}
+	.lane .sub {
+		color: var(--faint);
+		font-size: 12.5px;
+		margin: 4px 0 14px;
+	}
+	.tree {
+		font-family: var(--mono);
+		font-size: 12px;
+		line-height: 1.75;
+		color: var(--muted);
+		background: var(--panel-2);
+		border-radius: var(--r-sm);
+		padding: 12px 12px;
+		overflow-x: auto;
+		white-space: pre;
+		margin: 0 0 12px;
+	}
+	.tree .d {
+		color: var(--ink);
+		font-weight: 600;
+	}
+	.tree .f {
+		color: var(--teal-strong);
+	}
+	.tree .muted {
+		color: var(--faint);
+	}
+	.lane .role {
+		font-size: 13px;
+		color: var(--muted);
+		margin-top: auto;
+	}
+	.lane .role b {
+		color: var(--ink);
+		font-weight: 620;
+	}
+
+	.rels {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 10px;
+		margin-top: 18px;
+	}
+	.rel {
+		font-family: var(--mono);
+		font-size: 12.5px;
+		background: var(--panel);
+		border: 1px solid var(--line);
+		border-radius: 20px;
+		padding: 7px 13px;
+		color: var(--muted);
+	}
+	.rel b {
+		color: var(--ink);
+	}
+	.rel .ar {
+		color: var(--teal);
+		padding: 0 3px;
+	}
+
+	/* ---- tags vs edges ---- */
+	.twocol {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 20px;
+	}
+	.pane {
+		background: var(--panel);
+		border: 1px solid var(--line);
+		border-radius: var(--r);
+		padding: 20px;
+		box-shadow: var(--shadow);
+	}
+	.pane h3 {
+		font-size: 17px;
+		font-weight: 650;
+		display: flex;
+		align-items: center;
+		gap: 9px;
+	}
+	.pane > p {
+		color: var(--muted);
+		font-size: 14px;
+		margin: 8px 0 16px;
+	}
+	.chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+	.chip {
+		font-family: var(--mono);
+		font-size: 12.5px;
+		padding: 5px 10px;
+		border-radius: 20px;
+		border: 1px solid var(--line-strong);
+		background: var(--paper);
+		color: var(--muted);
+		white-space: nowrap;
+	}
+	.chip.area {
+		border-color: var(--teal);
+		color: var(--teal-strong);
+		background: var(--teal-soft);
+	}
+	.deflist {
+		display: flex;
+		flex-direction: column;
+		gap: 13px;
+	}
+	.def {
+		display: flex;
+		gap: 12px;
+		align-items: baseline;
+	}
+	.def .e {
+		font-family: var(--mono);
+		font-size: 12.5px;
+		font-weight: 650;
+		flex: 0 0 128px;
+		white-space: nowrap;
+	}
+	.def.prog .e {
+		color: var(--violet);
+	}
+	.def.forum .e {
+		color: var(--amber);
+	}
+	.def.cust .e {
+		color: var(--amber);
+	}
+	.def .ed {
+		font-size: 13.5px;
+		color: var(--muted);
+		line-height: 1.5;
+	}
+	.notecards {
+		margin-top: 16px;
+		font-size: 13px;
+		color: var(--muted);
+		background: var(--panel-2);
+		border-radius: var(--r-sm);
+		padding: 12px 14px;
+	}
+	.notecards b {
+		color: var(--ink);
+	}
+
+	/* ---- lifecycle ---- */
+	.rail {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 10px;
+		align-items: stretch;
+	}
+	.stage {
+		flex: 1 1 150px;
+		border: 1px solid var(--line);
+		border-radius: var(--r);
+		background: var(--panel);
+		padding: 14px 15px;
+		box-shadow: var(--shadow);
+		border-top: 3px solid var(--s);
+	}
+	.stage .nm {
+		font-family: var(--mono);
+		font-size: 13px;
+		font-weight: 700;
+		color: var(--s);
+		display: flex;
+		align-items: center;
+		gap: 7px;
+	}
+	.stage .ds {
+		font-size: 12.5px;
+		color: var(--muted);
+		margin-top: 6px;
+		line-height: 1.5;
+	}
+
+	/* ---- closing ---- */
+	.rules {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 14px;
+		margin-top: 8px;
+	}
+	.rule {
+		display: flex;
+		gap: 12px;
+		align-items: flex-start;
+		background: var(--panel);
+		border: 1px solid var(--line);
+		border-radius: var(--r);
+		padding: 15px 16px;
+		box-shadow: var(--shadow);
+	}
+	.rule .n {
+		font-family: var(--mono);
+		font-weight: 700;
+		color: var(--teal);
+		font-size: 13px;
+		flex: 0 0 auto;
+		padding-top: 1px;
+	}
+	.rule .rt {
+		font-size: 14px;
+		color: var(--muted);
+	}
+	.rule .rt b {
+		color: var(--ink);
+		font-weight: 640;
+	}
+
+	footer {
+		padding: 40px 0 64px;
+		color: var(--faint);
+		font-family: var(--mono);
+		font-size: 12px;
+	}
+	footer .wrap {
+		display: flex;
+		justify-content: space-between;
+		gap: 16px;
+		flex-wrap: wrap;
+	}
+
+	/* reveal */
+	@media (prefers-reduced-motion: no-preference) {
+		.reveal {
+			opacity: 0;
+			transform: translateY(10px);
+			animation: rise 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
+		}
+		@keyframes rise {
+			to {
+				opacity: 1;
+				transform: none;
+			}
+		}
+	}
+
+	@media (max-width: 760px) {
+		.card-lab,
+		.lanes,
+		.twocol,
+		.rules {
+			grid-template-columns: 1fr;
+		}
+		.layer {
+			grid-template-columns: 1fr;
+			gap: 6px;
+		}
+	}
+</style>
+
+<header class="hero">
+	<div class="wrap">
+		<p class="eyebrow">A field guide to the session-card system</p>
+		<h1>Work is a <span class="thin">card.</span><br />Memory is a <span class="thin">folder.</span></h1>
+		<p class="lede">
+			A personal, plain-text way to run long work across many short AI coding sessions — without
+			losing the thread. Everything is markdown you can read, tracked by one small tool. Here is the
+			whole model on one page.
+		</p>
+
+		<div class="equation">
+			<div class="prim context">
+				<span class="k">Context</span>
+				<span class="v">A folder</span>
+				<div class="d">The working files on disk. This is the <b>memory</b> — state lives here, not in any one chat.</div>
+			</div>
+			<div class="op">+</div>
+			<div class="prim session">
+				<span class="k">Session</span>
+				<span class="v">A working stint</span>
+				<div class="d">One Claude Code sitting. Start, stop, resume — as many as the job needs.</div>
+			</div>
+			<div class="op">→</div>
+			<div class="prim card">
+				<span class="k">Card</span>
+				<span class="v">The handle</span>
+				<div class="d">A markdown note binding a context + its sessions + a status. <b>One card, many sessions.</b></div>
+			</div>
+		</div>
+	</div>
+</header>
+
+<section>
+	<div class="wrap">
+		<div class="sec-head">
+			<h2>Four layers, one of them does the work</h2>
+			<p>
+				Everything hangs off a shallow hierarchy. The card sits in the middle — it <b>is</b> the
+				project, so there is no separate project layer to maintain. Only cards appear on the board;
+				the layers above are ordinary vault notes.
+			</p>
+		</div>
+
+		<div class="layers">
+			<div class="layer">
+				<span class="lname"><span class="dot" style="background: var(--st-onhold)"></span> Area</span>
+				<div>
+					<div class="ldesc">A standing domain of work — <code>area/work-ops</code>, <code>area/v7</code>. Broadest bucket.</div>
+					<span class="kind">vault note · a folder + folder-note</span>
+				</div>
+			</div>
+			<div class="pipe">│</div>
+			<div class="layer">
+				<span class="lname"><span class="dot" style="background: var(--violet)"></span> Program</span>
+				<div>
+					<div class="ldesc">A named body of related work a card calls home, e.g. <code>[[managing-ai-activities]]</code>.</div>
+					<span class="kind">vault note · linked from a card</span>
+				</div>
+			</div>
+			<div class="pipe">│</div>
+			<div class="layer is-card">
+				<span class="lname"><span class="dot" style="background: var(--teal)"></span> Card <span style="color: var(--faint); font-weight: 500">= Project</span></span>
+				<div>
+					<div class="ldesc"><b>The trackable unit.</b> A deliverable effort binding a context folder, its sessions, and a status.</div>
+					<span class="kind">markdown card · the only thing on the board</span>
+				</div>
+			</div>
+			<div class="pipe">│</div>
+			<div class="layer">
+				<span class="lname"><span class="dot" style="background: var(--blue)"></span> Session</span>
+				<div>
+					<div class="ldesc">A working slice of one card — a subtask, a new day, a context reset. Logged, never its own card.</div>
+					<span class="kind">a transcript · listed under ## Sessions</span>
+				</div>
+			</div>
+		</div>
+		<p class="note-inline">Hierarchy runs through <b>wikilinks</b> (a card's <code>program:</code>). Everything else is a <b>facet tag</b>.</p>
+	</div>
+</section>
+
+<section>
+	<div class="wrap">
+		<div class="sec-head">
+			<h2>Anatomy of a card</h2>
+			<p>
+				A card is just a markdown file with frontmatter — legible on its own, and the single source
+				of truth for status. Every field earns its place.
+			</p>
+		</div>
+
+		<div class="card-lab">
+			<div class="mdcard reveal" role="img" aria-label="Example session card in markdown">
+				<div class="bar">
+					<i></i><i></i><i></i>
+					<span class="fn">work-knowledge/Cards/session-card-board.md</span>
+				</div>
+<pre><span class="fence">---</span>
+<span class="key">type</span>: project
+<span class="key">title</span>: Session Card Board
+<span class="key">status</span>: <mark>in-progress</mark>
+<span class="key">summary</span>: <span class="str">A local web cockpit over the cards</span>
+<span class="key">program</span>: <span class="link">"[[managing-ai-activities]]"</span>
+<span class="key">raised-at</span>: <span class="tag">"[[e-and-a]]"</span>
+<span class="key">tags</span>: [<span class="tag">area/work-ops</span>, <span class="tag">kind/tooling</span>]
+<span class="key">sessionId</span>: <span class="sid">9ff88f23-8e91-…</span>
+<span class="key">paths</span>:
+  - <span class="path">…/claude-code-steveg/active/session-card-board</span>
+  - <span class="path">…/yambay-steveg/session-card-board</span>
+<span class="fence">---</span>
+
+<span class="h">## Sessions</span>
+- <span class="sid">`9ff88f23`</span> — 1 Jul — built the archive lifecycle <span class="cur">(current)</span>
+- <span class="sid">`4e7bd75c`</span> — 30 Jun — reconciled the board card
+</pre>
+			</div>
+
+			<div class="annot">
+				<div class="an c-status">
+					<div class="field">status</div>
+					<div class="txt">The lifecycle state — the <b>source of truth</b>. Drives the board and, on the disk, where the folder lives.</div>
+				</div>
+				<div class="an c-prog">
+					<div class="field">program: [[…]]</div>
+					<div class="txt">The card's <b>home</b> in the hierarchy. A wikilink, so it survives renames and can be a list for multi-membership.</div>
+				</div>
+				<div class="an c-forum">
+					<div class="field">raised-at: [[…]]</div>
+					<div class="txt"><b>Provenance</b>, kept separate from home: where this came up (a meeting/forum). A card can live in one program yet trace to another place.</div>
+				</div>
+				<div class="an c-tags">
+					<div class="field">tags: area/… kind/…</div>
+					<div class="txt"><b>Facets</b>, not hierarchy. Multi-valued and shared with the rest of the vault's notes.</div>
+				</div>
+				<div class="an c-paths">
+					<div class="field">paths:</div>
+					<div class="txt">The <b>context folders</b> this card works on — the memory. First one is the primary (where sessions run).</div>
+				</div>
+				<div class="an c-sess">
+					<div class="field">sessionId · ## Sessions</div>
+					<div class="txt"><code>sessionId</code> is just the current pin to resume; <b>## Sessions</b> is the readable history — one card, many sessions.</div>
+				</div>
+			</div>
+		</div>
+	</div>
+</section>
+
+<section>
+	<div class="wrap">
+		<div class="sec-head">
+			<h2>Where everything is stored</h2>
+			<p>
+				Three homes, each holding what it's best at. The card lives in the knowledge vault; the work
+				lives in the task repos; the sessions live where Claude keeps its transcripts. The card's
+				fields are the wiring between them.
+			</p>
+		</div>
+
+		<div class="lanes">
+			<div class="lane vault">
+				<div class="top"><span class="badge">Obsidian vault</span></div>
+				<h3>The card + the notes</h3>
+				<div class="sub">work-knowledge/ · personal vault</div>
+				<div class="tree"><span class="d">Cards/</span>
+  session-card-board<span class="f">.md</span>
+  card-model-skill<span class="f">.md</span>
+<span class="d">Programs/</span> <span class="muted">managing-ai-activities/</span>
+<span class="d">Areas/</span>  <span class="muted">Forums/</span>  <span class="muted">Customers/</span>
+<span class="d">Cards/</span>board.base <span class="muted">← the board</span></div>
+				<div class="role"><b>One graph.</b> Cards share the vault's tags and links; Areas / Programs / Forums / Customers are notes here, never cards.</div>
+			</div>
+
+			<div class="lane repos">
+				<div class="top"><span class="badge">Task repos (git)</span></div>
+				<h3>The working files</h3>
+				<div class="sub">what <code>paths:</code> points at</div>
+				<div class="tree"><span class="d">active/</span>
+  <span class="f">session-card-board/</span>  <span class="muted">← the memory</span>
+    README.md  src/  …
+<span class="d">archive/</span>
+  <span class="muted">2026-07-session-card-board/</span></div>
+				<div class="role"><b>The activity folder is the memory.</b> Done work is filed from <code>active/</code> to <code>archive/</code>.</div>
+			</div>
+
+			<div class="lane tx">
+				<div class="top"><span class="badge">Transcripts</span></div>
+				<h3>The sessions</h3>
+				<div class="sub">~/.claude/projects/</div>
+				<div class="tree"><span class="muted">-Users-…-active-</span><span class="f">session-card-board/</span>
+  <span class="sid">9ff88f23-…</span>.jsonl
+  <span class="sid">4e7bd75c-…</span>.jsonl</div>
+				<div class="role"><b>Keyed by folder.</b> The transcript path encodes the working folder — so resume finds the right sessions, even after a move.</div>
+			</div>
+		</div>
+
+		<div class="rels">
+			<span class="rel"><b>card</b><span class="ar">— paths →</span> active folder</span>
+			<span class="rel"><b>card</b><span class="ar">— sessionId / ## Sessions →</span> transcripts</span>
+			<span class="rel">folder <span class="ar">↔</span> transcripts <span style="color: var(--faint)">(cwd encodes the path)</span></span>
+		</div>
+	</div>
+</section>
+
+<section>
+	<div class="wrap">
+		<div class="sec-head">
+			<h2>Tags describe, links connect</h2>
+			<p>Two different jobs, kept deliberately apart. Facets are flat labels you filter by; edges are wikilinks that place a card in the graph.</p>
+		</div>
+
+		<div class="twocol">
+			<div class="pane">
+				<h3><span class="dot" style="width: 10px; height: 10px; border-radius: 50%; background: var(--teal); display: inline-block"></span> Facets — tags</h3>
+				<p>Flat, multi-valued labels. A card can carry several. Shared with every other note in the vault.</p>
+				<div class="chips">
+					<span class="chip area">area/work-ops</span>
+					<span class="chip area">area/v7</span>
+					<span class="chip">kind/tooling</span>
+					<span class="chip">kind/decision</span>
+					<span class="chip">jira/PRODEV-23590</span>
+				</div>
+			</div>
+
+			<div class="pane">
+				<h3><span class="dot" style="width: 10px; height: 10px; border-radius: 50%; background: var(--violet); display: inline-block"></span> Edges — wikilinks</h3>
+				<p>Whole-value links, so a rename updates everywhere. Each edge means something distinct.</p>
+				<div class="deflist">
+					<div class="def prog">
+						<span class="e">program:</span>
+						<span class="ed"><b>Home.</b> The program this card belongs to.</span>
+					</div>
+					<div class="def forum">
+						<span class="e">raised-at:</span>
+						<span class="ed"><b>Provenance.</b> The forum/meeting it came from.</span>
+					</div>
+					<div class="def cust">
+						<span class="e">customer:</span>
+						<span class="ed"><b>Stakeholder.</b> A cross-cutting party the work is for.</span>
+					</div>
+				</div>
+				<div class="notecards">Their targets — <b>Programs</b>, <b>Forums</b>, <b>Customers</b> — are all vault notes (a folder + a same-name note), <b>never</b> cards. The link feeds their backlinks as a zero-maintenance index.</div>
+			</div>
+		</div>
+	</div>
+</section>
+
+<section>
+	<div class="wrap">
+		<div class="sec-head">
+			<h2>The lifecycle</h2>
+			<p>
+				<code>status</code> is the source of truth; the disk is reconciled from it. Move a card
+				through these and the folders follow.
+			</p>
+		</div>
+		<div class="rail">
+			<div class="stage" style="--s: var(--st-backlog)">
+				<div class="nm"><span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: currentColor; display: inline-block"></span> backlog</div>
+				<div class="ds">Captured, not started. On the board.</div>
+			</div>
+			<div class="stage" style="--s: var(--st-inprogress)">
+				<div class="nm"><span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: currentColor; display: inline-block"></span> in-progress</div>
+				<div class="ds">Being worked. The live column.</div>
+			</div>
+			<div class="stage" style="--s: var(--st-onhold)">
+				<div class="nm"><span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: currentColor; display: inline-block"></span> on-hold</div>
+				<div class="ds">Paused, still on the board.</div>
+			</div>
+			<div class="stage" style="--s: var(--st-done)">
+				<div class="nm"><span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: currentColor; display: inline-block"></span> done</div>
+				<div class="ds">Finished. Off the board; folder kept in place.</div>
+			</div>
+			<div class="stage" style="--s: var(--st-archived)">
+				<div class="nm"><span class="dot" style="width: 8px; height: 8px; border-radius: 50%; background: currentColor; display: inline-block"></span> archived</div>
+				<div class="ds">Filed. Folder moved to <code>archive/</code>; inert until reinstated.</div>
+			</div>
+		</div>
+	</div>
+</section>
+
+<section style="border-bottom: 0">
+	<div class="wrap">
+		<div class="sec-head">
+			<h2>Three rules that hold it together</h2>
+		</div>
+		<div class="rules">
+			<div class="rule">
+				<span class="n">01</span>
+				<div class="rt"><b>Folder is memory, session is a stint, card is the handle.</b> Break work into as many sessions as you like — the folder carries the state, so any session can pick it back up.</div>
+			</div>
+			<div class="rule">
+				<span class="n">02</span>
+				<div class="rt"><b>One tool writes the cards.</b> <code>cardctl</code> is the single validated writer — the board and the sessions change cards <i>through</i> it, never by hand-editing frontmatter. Renames go through Obsidian so links never break.</div>
+			</div>
+			<div class="rule">
+				<span class="n">03</span>
+				<div class="rt"><b>Working memory, not the record.</b> When work finishes, the durable knowledge graduates out to its real home — the vault, the repo, Jira, email. The card system holds the thread while it's live.</div>
+			</div>
+			<div class="rule">
+				<span class="n">→</span>
+				<div class="rt"><b>How you actually drive it:</b> a Kanban board (an Obsidian base, or the web cockpit). Pick a card, hit launch — the right folders open in your editor and the matching session resumes.</div>
+			</div>
+		</div>
+	</div>
+</section>
+
+<footer>
+	<div class="wrap">
+		<span>The session-card system · plain markdown, one CLI, your editor</span>
+		<span>Context + Session → Card</span>
+	</div>
+</footer>
+
+<script>
+	// Stagger the small reveal on the card panel only (restraint).
+	if (matchMedia('(prefers-reduced-motion: no-preference)').matches) {
+		document.querySelectorAll('.reveal').forEach((el, i) => {
+			el.style.animationDelay = i * 80 + 'ms';
+		});
+	}
+</script>
