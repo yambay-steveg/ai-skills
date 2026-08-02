@@ -28,6 +28,8 @@ that — a copy. Edit here, then re-deploy:
 
 ```bash
 cp bin/kb-lint              ~/bin/kb-lint
+cp bin/brew-check           ~/bin/brew-check
+cp bin/brew-apply           ~/bin/brew-apply
 cp session-cards/cardctl    ~/bin/cardctl
 ```
 
@@ -37,6 +39,8 @@ Never edit `~/bin/<tool>` directly — the next deploy silently overwrites it.
 | --- | --- | --- |
 | `cardctl` | `session-cards/cardctl` | The session-card engine. Single validated writer for card frontmatter; the board shells out to it. Usage: `session-cards/cardctl.md`. |
 | `kb-lint` | `bin/kb-lint` | Drift detector across both Obsidian vaults — cross-vault duplicates, unresolved links, orphans. The note-level counterpart to `cardctl lint`. |
+| `brew-check` | `bin/brew-check` | **Read-only** report of outdated Homebrew packages, flagging the security-relevant subset. Safe for unattended use. |
+| `brew-apply` | `bin/brew-apply` | Upgrades them. Deliberately **interactive** — confirms per stage. Successor to the `brew-update` Warp workflow. |
 | `aip` / `aiw` | `bin/` | Open a personal / work AI task folder. |
 | `session-start-hook.sh` | `bin/` | SessionStart hook — resolves the cwd to its card and injects status/latest. |
 

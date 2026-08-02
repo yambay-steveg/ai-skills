@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# brew-check — report outdated Homebrew packages. READ-ONLY: never changes anything.
+#
+# Safe for anyone or anything to run — Claude Code, a scheduled job, the maintenance
+# runbook. The counterpart that actually upgrades is `brew-apply`, which is deliberately
+# interactive and human-driven (package upgrades break toolchains; be present for that).
+#
+# Ported out of the Warp workflow `brew-update.yaml` so the knowledge below is not
+# hostage to a terminal emulator that is no longer in daily use.
+#
+# Usage:
+#   brew-check            human-readable report
+#   brew-check --quiet    print only if something is outdated (cron / hook use)
+#   brew-check --json     machine-readable
+#
+# Exit status: 0 = everything current, 1 = updates available, 2 = error.
+
+set -uo pipefail
+
+export HOMEBREW_NO_AUTO_UPDATE=1
+export HOMEBREW_NO_ENV_HINTS=1
+
+# Casks that manage their own updates — upgrading them via brew fights their updater.
+# Inherited from the Warp workflow; keep this list in sync with brew-apply.
+SELF_UPDATING_CASKS=(eset-cyber-security)
+
+# Packages worth calling out separately: the TLS/crypto/runtime stack, where being
+# stale has security weight rather than just being untidy.
+SECURITY_PATTERN='^(openssl|ca-certificates|curl|gnupg|libssh|libssh2|openvpn|unbound|nss|nghttp|node|python@|openjdk)'
+
+QUIET=0
+JSON=0
+for arg in "$@"; do
+  case "$arg" in
+    --quiet) QUIET=1 ;;
+    --json)  JSON=1 ;;
+    -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "brew-check: unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
+
+command -v brew >/dev/null 2>&1 || { echo "brew-check: brew not found on PATH" >&2; exit 2; }
+
+exclude_self_updating() {
+  local filter
+  filter=$(printf '%s\n' "${SELF_UPDATING_CASKS[@]}" | paste -sd'|' -)
+  grep -Ev "^(${filter})$" || true
+}
+
+formulae=$(brew outdated --formula --quiet 2>/dev/null || true)
+casks_all=$(brew outdated --cask --quiet 2>/dev/null || true)
+casks=$(printf '%s\n' "$casks_all" | sed '/^$/d' | exclude_self_updating)
+skipped=$(printf '%s\n' "$casks_all" | sed '/^$/d' | grep -E "^($(printf '%s\n' "${SELF_UPDATING_CASKS[@]}" | paste -sd'|' -))$" || true)
+
+n_formulae=$(printf '%s\n' "$formulae" | sed '/^$/d' | wc -l | tr -d ' ')
+n_casks=$(printf '%s\n' "$casks" | sed '/^$/d' | wc -l | tr -d ' ')
+security=$(printf '%s\n' "$formulae" | sed '/^$/d' | grep -E "$SECURITY_PATTERN" || true)
+n_security=$(printf '%s\n' "$security" | sed '/^$/d' | wc -l | tr -d ' ')
+
+total=$((n_formulae + n_casks))
+
+if [ "$JSON" -eq 1 ]; then
+  json_array() { printf '%s\n' "$1" | sed '/^$/d' | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))'; }
+  printf '{"formulae":%s,"casks":%s,"security":%s,"skipped":%s,"total":%d}\n' \
+    "$(json_array "$formulae")" "$(json_array "$casks")" \
+    "$(json_array "$security")" "$(json_array "$skipped")" "$total"
+  [ "$total" -eq 0 ] && exit 0 || exit 1
+fi
+
+if [ "$total" -eq 0 ]; then
+  [ "$QUIET" -eq 1 ] || echo "brew-check: everything current."
+  exit 0
+fi
+
+if [ "$n_security" -gt 0 ]; then
+  echo "SECURITY-RELEVANT ($n_security) — TLS/crypto/runtime stack"
+  printf '%s\n' "$security" | sed '/^$/d' | sed 's/^/  /'
+  echo
+fi
+
+if [ "$n_formulae" -gt 0 ]; then
+  echo "FORMULAE ($n_formulae)"
+  printf '%s\n' "$formulae" | sed '/^$/d' | tr '\n' ' ' | fold -s -w 92 | sed 's/^/  /'
+  echo
+fi
+
+if [ "$n_casks" -gt 0 ]; then
+  echo "CASKS ($n_casks)"
+  printf '%s\n' "$casks" | sed '/^$/d' | tr '\n' ' ' | fold -s -w 92 | sed 's/^/  /'
+  echo
+fi
+
+if [ -n "$skipped" ]; then
+  echo "SKIPPED (self-updating)"
+  printf '%s\n' "$skipped" | sed '/^$/d' | sed 's/^/  /'
+  echo
+fi
+
+echo "$total update(s) available. Apply with: brew-apply"
+exit 1
