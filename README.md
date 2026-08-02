@@ -14,9 +14,31 @@ skills/
     SKILL.md
     scripts/
     tests/
+session-cards/        # The session-card system: cardctl + spec + tests + vault surfaces
+bin/                  # Standalone command-line tools, deployed to ~/bin
 profiles/             # Notes on third-party skills under evaluation
+raycast/  warp/       # Integrations for those launchers
 install.sh            # Install a skill to ~/.claude/skills/
 ```
+
+## Command-line tools (`bin/` and `session-cards/`)
+
+**This repo is the source of truth; `~/bin` is a deploy target.** The copy on PATH is exactly
+that — a copy. Edit here, then re-deploy:
+
+```bash
+cp bin/kb-lint              ~/bin/kb-lint
+cp session-cards/cardctl    ~/bin/cardctl
+```
+
+Never edit `~/bin/<tool>` directly — the next deploy silently overwrites it.
+
+| Tool | Source | What it does |
+| --- | --- | --- |
+| `cardctl` | `session-cards/cardctl` | The session-card engine. Single validated writer for card frontmatter; the board shells out to it. Usage: `session-cards/cardctl.md`. |
+| `kb-lint` | `bin/kb-lint` | Drift detector across both Obsidian vaults — cross-vault duplicates, unresolved links, orphans. The note-level counterpart to `cardctl lint`. |
+| `aip` / `aiw` | `bin/` | Open a personal / work AI task folder. |
+| `session-start-hook.sh` | `bin/` | SessionStart hook — resolves the cwd to its card and injects status/latest. |
 
 ## Creating a New Skill
 

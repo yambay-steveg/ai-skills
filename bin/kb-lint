@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""kb-lint — drift detector across Steve's two Obsidian vaults.
+
+Companion to `cardctl lint` (which governs cards). This governs *notes*.
+
+The failure it exists to catch: a note filed in the wrong vault because that is where the
+AI session happened to be running, and the near-duplicate that later forms in the other
+vault because nobody could see across both at once.
+
+Usage:
+    kb-lint                 human-readable report
+    kb-lint --json          machine-readable
+    kb-lint --quiet         only print if findings exist (for cron / runbook use)
+
+Exit status: 0 = clean, 1 = findings, 2 = error.
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+VAULTS = {
+    "personal": Path.home() / "Source/personal/knowledge/personal-knowledge",
+    "work": Path.home() / "Source/work/yambay-steveg/work-knowledge",
+}
+
+SKIP_DIRS = {".obsidian", ".git", ".trash", ".smart-env"}
+# Indexed as link *targets* (so [[Templates/daily-note]] resolves) but never scanned as
+# sources — templates are full of deliberate placeholders.
+NO_SCAN_DIRS = {"Templates"}
+
+# Wikilink: [[target]], [[folder/target|alias]], [[target#heading]]
+LINK_RE = re.compile(r"\[\[([^\]\|#]+)(?:#[^\]\|]*)?(?:\|[^\]]*)?\]\]")
+
+# Code must be stripped before scanning: docs about linking contain example links
+# that are not real links (this file's own routing note is one).
+FENCE_RE = re.compile(r"^[ \t]*(```|~~~).*?^[ \t]*\1", re.S | re.M)
+INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+
+# Targets that are deliberately not notes, and must not be reported:
+#   {{date:…}}  template syntax        <program>   doc placeholder
+#   …           elided example         2026-W31    periodic note, created on demand
+NON_TARGET_RES = [
+    re.compile(r"\{\{.*\}\}"),
+    re.compile(r"^<.*>$"),
+    re.compile("…"),
+    re.compile(r"^\d{4}-W\d{2}$"),
+    re.compile(r"^\d{4}-\d{2}-\d{2}$"),
+    re.compile(r"\.(base|canvas|pdf|png|jpe?g)$", re.I),
+]
+
+
+# The two vaults are deliberately parallel: each has its own landing page, diary, templates
+# and agent-instruction files. A same-named note in both is the design, not drift.
+PARALLEL_BY_DESIGN = {
+    "home", "diary", "claude", "agents", "readme",
+    "diary-system", "skills-management", "tagging-convention", "where-things-go",
+    "knowledge-model", "board",
+}
+# Whole trees that are per-vault by design.
+PARALLEL_TREES = {"Diary", "Templates", "Cards"}
+
+
+def parallel_by_design(stem: str, hits) -> bool:
+    if stem in PARALLEL_BY_DESIGN:
+        return True
+    # a dated diary entry exists independently in each vault
+    return all(Path(rel).parts[0] in PARALLEL_TREES for _, rel in hits)
+
+
+def strip_code(text: str) -> str:
+    return INLINE_CODE_RE.sub(" ", FENCE_RE.sub(" ", text))
+
+
+def is_real_target(target: str) -> bool:
+    return not any(r.search(target) for r in NON_TARGET_RES)
+
+
+def note_files(root: Path):
+    if not root.is_dir():
+        return
+    for p in root.rglob("*.md"):
+        if any(part in SKIP_DIRS for part in p.relative_to(root).parts):
+            continue
+        yield p
+
+
+def load(root: Path):
+    """Return {relpath: (basename, text)} for one vault."""
+    out = {}
+    for p in note_files(root):
+        try:
+            out[str(p.relative_to(root))] = (p.stem, p.read_text(errors="ignore"))
+        except OSError:
+            continue
+    return out
+
+
+def resolve_targets(notes):
+    """Index a vault's notes by both basename and vault-relative path (no extension)."""
+    by_base, by_path = defaultdict(list), {}
+    for rel, (stem, _) in notes.items():
+        by_base[stem.lower()].append(rel)
+        by_path[rel[:-3].lower()] = rel
+    return by_base, by_path
+
+
+def lint():
+    findings = []
+    loaded = {}
+
+    for name, root in VAULTS.items():
+        if not root.is_dir():
+            findings.append({
+                "severity": "ERROR", "code": "VAULT-MISSING", "vault": name,
+                "file": str(root), "message": f"vault path does not exist: {root}",
+            })
+            continue
+        loaded[name] = load(root)
+
+    # --- cross-vault basename collisions -------------------------------------
+    if len(loaded) == 2:
+        pbase = defaultdict(list)
+        for vault, notes in loaded.items():
+            for rel, (stem, _) in notes.items():
+                pbase[stem.lower()].append((vault, rel))
+        for stem, hits in sorted(pbase.items()):
+            vaults = {v for v, _ in hits}
+            if len(vaults) > 1 and not parallel_by_design(stem, hits):
+                texts = {}
+                for v, rel in hits:
+                    texts[(v, rel)] = loaded[v][rel][1]
+                identical = len(set(texts.values())) == 1
+                findings.append({
+                    "severity": "WARN",
+                    "code": "CROSS-VAULT-DUPLICATE",
+                    "vault": "both",
+                    "file": ", ".join(f"{v}:{r}" for v, r in hits),
+                    "message": (
+                        f"'{stem}' exists in both vaults — "
+                        + ("content IDENTICAL, delete one"
+                           if identical else
+                           "content DIFFERS, needs compare-and-merge (do not overwrite)")
+                    ),
+                })
+
+    # --- per-vault checks -----------------------------------------------------
+    for vault, notes in loaded.items():
+        by_base, by_path = resolve_targets(notes)
+
+        # in-vault basename collisions (Obsidian silently path-qualifies these)
+        for stem, rels in sorted(by_base.items()):
+            if len(rels) > 1:
+                findings.append({
+                    "severity": "WARN", "code": "BASENAME-COLLISION", "vault": vault,
+                    "file": ", ".join(sorted(rels)),
+                    "message": f"'{stem}' used by {len(rels)} notes — breaks [[shortest]] links",
+                })
+
+        linked_to = set()
+        for rel, (_, text) in sorted(notes.items()):
+            if Path(rel).parts[0] in NO_SCAN_DIRS:
+                continue
+            for raw in LINK_RE.findall(strip_code(text)):
+                target = raw.strip()
+                if not target or not is_real_target(target):
+                    continue
+                key = target.lower()
+                if key.endswith(".md"):
+                    key = key[:-3]
+                hit = by_path.get(key) or (by_base.get(key.split("/")[-1]) or [None])[0]
+                if hit:
+                    linked_to.add(hit)
+                else:
+                    findings.append({
+                        "severity": "ERROR", "code": "UNRESOLVED-LINK", "vault": vault,
+                        "file": rel, "message": f"[[{target}]] resolves to nothing",
+                    })
+
+        # orphans — unreachable except by search
+        for rel, (stem, _) in sorted(notes.items()):
+            parts = Path(rel).parts
+            if len(parts) == 1:
+                continue  # root notes are landing pages by convention
+            if parts[0] in NO_SCAN_DIRS or parts[0] == "Diary":
+                continue  # templates and dated entries are reached by date, not links
+            if stem.lower() == Path(rel).parent.name.lower():
+                continue  # folder note
+            if rel not in linked_to:
+                findings.append({
+                    "severity": "INFO", "code": "ORPHAN", "vault": vault, "file": rel,
+                    "message": "no inbound links — findable only by search",
+                })
+
+    return findings
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Lint Steve's Obsidian vaults for drift.")
+    ap.add_argument("--json", action="store_true", help="emit JSON")
+    ap.add_argument("--quiet", action="store_true", help="print only when findings exist")
+    ap.add_argument("--orphans", action="store_true",
+                    help="include ORPHAN findings (INFO); hidden by default as they are numerous")
+    args = ap.parse_args()
+
+    try:
+        findings = lint()
+    except Exception as exc:
+        print(f"kb-lint: failed: {exc}", file=sys.stderr)
+        return 2
+
+    hidden = 0
+    if not args.orphans:
+        before = len(findings)
+        findings = [f for f in findings if f["code"] != "ORPHAN"]
+        hidden = before - len(findings)
+
+    if args.json:
+        print(json.dumps(findings, indent=2))
+        return 1 if findings else 0
+
+    if not findings:
+        if not args.quiet:
+            print("kb-lint: clean — no cross-vault duplicates, unresolved links, or orphans.")
+        return 0
+
+    order = {"ERROR": 0, "WARN": 1, "INFO": 2}
+    counts = defaultdict(int)
+    for f in findings:
+        counts[f["severity"]] += 1
+
+    last = None
+    for f in sorted(findings, key=lambda x: (order[x["severity"]], x["code"], x["file"])):
+        if f["severity"] != last:
+            print(f"\n{f['severity']}")
+            last = f["severity"]
+        print(f"  [{f['code']}] ({f['vault']}) {f['file']}")
+        print(f"      {f['message']}")
+
+    total = len(findings)
+    print(f"\n{total} finding(s): "
+          f"{counts['ERROR']} error, {counts['WARN']} warn, {counts['INFO']} info")
+    if hidden:
+        print(f"({hidden} orphan note(s) hidden — show with --orphans)")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
