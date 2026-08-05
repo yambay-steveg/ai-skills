@@ -1977,6 +1977,34 @@ def test_new_default_creates_activity_folder_as_primary(cc, tmp_path, monkeypatc
     assert "created activity folder" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("title", [
+    "White paper: Data sources and partitioning",   # colon → invalid YAML unquoted
+    "Trailing space and #hash",
+    "Plain title",
+])
+def test_new_quotes_title_so_punctuation_survives_the_round_trip(cc, tmp_path, monkeypatch, title):
+    """A colon in --title used to be written bare, producing `title: a: b` — invalid YAML
+    that breaks Obsidian's frontmatter parse. Titles are quoted like summary/latest, and
+    read back through the same unquote() every consumer (list --json, which) uses."""
+    cards, _ = _wire_new(cc, tmp_path, monkeypatch)
+    cc.cmd_new(_new_ns("wp-card", title=title))
+    raw, _ = cc.read_card(str(cards / "wp-card.md"))
+    assert raw["title"].startswith('"') and raw["title"].endswith('"')   # written quoted
+    assert cc.unquote(raw["title"]) == title                            # and reads back intact
+
+
+def test_new_title_with_colon_is_valid_yaml_for_obsidian(cc, tmp_path, monkeypatch):
+    """The actual reported symptom: Obsidian parses the frontmatter as real YAML, so a
+    colon in the title must not break that parse. Asserted with a real YAML parser
+    rather than cardctl's own scalar reader."""
+    yaml = pytest.importorskip("yaml")
+    cards, _ = _wire_new(cc, tmp_path, monkeypatch)
+    title = "White paper: Data sources and partitioning"
+    cc.cmd_new(_new_ns("wp-yaml", title=title))
+    fm_block = (cards / "wp-yaml.md").read_text().split("---\n")[1]
+    assert yaml.safe_load(fm_block)["title"] == title
+
+
 def test_new_path_entries_appended_after_activity_and_not_created(cc, tmp_path, monkeypatch):
     cards, active = _wire_new(cc, tmp_path, monkeypatch)
     existing = tmp_path / "monorepo"

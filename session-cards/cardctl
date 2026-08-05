@@ -851,7 +851,7 @@ def cmd_new(args):
     # literal in the file (YAML would parse \uXXXX, but the raw card stays readable).
     def yq(s):
         return json.dumps(s or "", ensure_ascii=False)
-    fm = [f"type: {args.type}", f"title: {args.title}", f"status: {args.status}",
+    fm = [f"type: {args.type}", f"title: {yq(args.title)}", f"status: {args.status}",
           f"summary: {yq(args.summary)}",
           f"latest: {yq(args.latest)}",
           f"tags: [{', '.join(tags)}]"]
