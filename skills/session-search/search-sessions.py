@@ -11,6 +11,9 @@ Options:
     --project PATH  Filter to sessions from a specific project directory
     --days N        Only search sessions from the last N days
     --list-recent N List the N most recent sessions (ignores query)
+    --json          Emit results as JSON on stdout — a clean machine contract: stdout
+                    carries only the JSON array (progress goes to stderr), and "no
+                    matches" emits `[]` rather than nothing.
 """
 
 import json
@@ -25,6 +28,18 @@ from pathlib import Path
 CLAUDE_DIR = Path.home() / ".claude"
 HISTORY_FILE = CLAUDE_DIR / "history.jsonl"
 PROJECTS_DIR = CLAUDE_DIR / "projects"
+
+
+def _progress(msg=""):
+    """Write a human progress line to **stderr**.
+
+    Search progress ("Searching for: …", deep-search notice) used to go to stdout, which
+    made `--json` unparseable for any programmatic caller — stdout carried a preamble
+    before the JSON array. stdout is now reserved for the result payload, so `--json` is a
+    clean contract while an interactive user still sees progress (stderr goes to the
+    terminal too).
+    """
+    print(msg, file=sys.stderr)
 
 
 def copy_to_clipboard(text):
@@ -349,17 +364,21 @@ def main():
     query = " ".join(args.query)
     patterns = [re.compile(re.escape(term), re.IGNORECASE) for term in query.split()]
 
-    print(f"\nSearching for: {query}")
+    _progress(f"\nSearching for: {query}")
     if args.deep:
-        print("Mode: deep (searching full transcripts)")
-    print()
+        _progress("Mode: deep (searching full transcripts)")
+    _progress()
 
     # Phase 1: Search history.jsonl
     scored, session_meta = search_history(query, limit=args.limit * 2, project_filter=args.project, days_filter=args.days)
 
     if not scored and not args.deep:
-        print("No matches in prompt history.")
-        print("Tip: Use --deep to search inside full session transcripts.\n")
+        _progress("No matches in prompt history.")
+        _progress("Tip: Use --deep to search inside full session transcripts.\n")
+        # "No results" is a valid result, not an absence of one: emit an empty array so a
+        # caller can parse every outcome instead of special-casing empty stdout.
+        if args.json:
+            print(json.dumps([]))
         return
 
     session_files = get_session_files()
@@ -406,7 +425,7 @@ def main():
 
         # Limit deep search to recent sessions to keep it fast
         search_limit = min(len(all_sessions), 100)
-        print(f"Deep searching {search_limit} most recent sessions...")
+        _progress(f"Deep searching {search_limit} most recent sessions...")
 
         for sid, info in all_sessions[:search_limit]:
             if sid in already_found:
