@@ -72,12 +72,14 @@ title/summary — a *candidate* for a Program/Forum note, the skill + you make t
 ## `set` — metadata writer (the apply-on-confirm fixes)
 
 The validated writer behind `/card-model`'s low-risk fixes. Scope is deliberately reversible
-metadata — the `area/*` facet, extra facet tags, and the `program:`/`raised-at:` link-properties.
+metadata — the `summary` line, the `area/*` facet, extra facet tags, and the
+`program:`/`raised-at:` link-properties.
 It refuses any file outside a configured `Cards/` folder and never touches `status` (that stays
 with `set-status`) or renames notes (an Obsidian-API job). Adding a link-property *value* to a card
 is a create/edit, so a filesystem write is correct here.
 
 ```bash
+cardctl set <card.md> --summary "one-line what this is"  # the board's standing summary line
 cardctl set <card.md> --area area/v7                 # replace the area/* facet
 cardctl set <card.md> --program managing-ai-activities  # set/repoint program: "[[…]]" home link
 cardctl set <card.md> --raised-at e-and-a            # set raised-at: "[[…]]" provenance link
@@ -90,6 +92,14 @@ cardctl set <card.md> --remove-path ~/Source/work/…  # remove a folder from pa
 
 Existing inline (`tags: [a, b]`) vs block (`tags:\n  - a`) form is preserved; edits are surgical
 so the vault git diff stays minimal.
+
+`--summary` is quoted through the same YAML quoter as `cardctl new`, so prose containing a colon
+or hash can't break Obsidian's frontmatter parse. Omitting the flag leaves an existing summary
+untouched; passing `--summary ""` clears it deliberately.
+
+There is deliberately **no `--latest` writer yet**: whether `latest` is a human glance line or an
+AI handoff note is an open convention question, and automating the wrong answer is worse than the
+current hand-edit. `latest` and the `## Sessions` log remain the two sanctioned hand-edits.
 
 ## `list` — the board's read interface
 

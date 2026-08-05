@@ -171,6 +171,17 @@ def unquote(v):
     return v[1:-1] if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'" else v
 
 
+def yq(s):
+    """Quote a free-text scalar for YAML frontmatter — the inverse of {@link unquote}.
+
+    `json.dumps` gives YAML-safe double-quoting (so colons, hashes and quotes in prose
+    can't break Obsidian's frontmatter parse), and `ensure_ascii=False` keeps dashes and
+    accents literal so the raw card stays readable. Shared by `new` and `set` so both
+    write these fields identically.
+    """
+    return json.dumps(s or "", ensure_ascii=False)
+
+
 def unwrap_wikilink(v):
     """`[[Target]]` / `[[Target|Alias]]` → `Target`; anything else returned as-is
     (after unquoting). The board wants the bare target, not the display alias."""
@@ -847,10 +858,6 @@ def cmd_new(args):
             print(f"cardctl: warning — path does not exist yet: {p}", file=sys.stderr)
 
     # Human glance fields (shown on the board) first; plumbing (cardctl) last.
-    # json.dumps gives YAML-safe double-quoting; ensure_ascii=False keeps em-dashes etc.
-    # literal in the file (YAML would parse \uXXXX, but the raw card stays readable).
-    def yq(s):
-        return json.dumps(s or "", ensure_ascii=False)
     fm = [f"type: {args.type}", f"title: {yq(args.title)}", f"status: {args.status}",
           f"summary: {yq(args.summary)}",
           f"latest: {yq(args.latest)}",
@@ -2080,6 +2087,15 @@ def cmd_set(args):
     if new_tags != tags:
         text = set_tags_in_text(text, new_tags)
 
+    # `summary` — the card's standing "what this is" line. Quoted through the same yq() as
+    # `cmd_new`, so prose containing a colon can't break the frontmatter parse. Deliberately
+    # NOT paired with a `--latest` writer yet: what `latest` is *for* (a human glance line vs
+    # an AI handoff note) is an open convention question, and automating the wrong answer is
+    # worse than the current hand-edit. See the session-card-improvements card.
+    if args.summary is not None:
+        text = set_fm_field(text, "summary", yq(args.summary))
+        changes.append(("summary", args.summary))
+
     if args.program is not None:
         text = set_fm_field(text, "program", f'"[[{unwrap_wikilink(args.program)}]]"')
         changes.append(("program", unwrap_wikilink(args.program)))
@@ -2368,6 +2384,8 @@ def main():
     pst = sub.add_parser("set", help="set a card's metadata (area/program/raised-at/tags) — the "
                                      "validated writer behind the /card-model apply-on-confirm fixes")
     pst.add_argument("card")
+    pst.add_argument("--summary", help="set the card's one-line 'what this is' summary "
+                                       "(shown on the board; quoted, so prose is safe)")
     pst.add_argument("--area", help="set the area/* facet (replaces any existing area/* tag)")
     pst.add_argument("--add-area", action="append", help="add an additional area/* tag (repeatable)")
     pst.add_argument("--program", help='set program: "[[name]]" home link (repoints if present)')

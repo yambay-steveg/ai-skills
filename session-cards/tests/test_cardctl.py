@@ -2252,7 +2252,7 @@ def test_launch_delay_default_matches_docs(cc):
 
 # ── set: the metadata writer ────────────────────────────────────────────────────
 def _set_ns(card, **kw):
-    base = dict(card=card, area=None, add_area=None, program=None,
+    base = dict(card=card, summary=None, area=None, add_area=None, program=None,
                 raised_at=None, add_tag=None, remove_tag=None,
                 add_path=None, remove_path=None, customer=None)
     base.update(kw)
@@ -2290,6 +2290,54 @@ def test_cmd_set_area_replaces_and_adds_program(cc, tmp_path, monkeypatch, capsy
     fm, _ = cc.read_card(str(card))
     assert "area/v7" in fm["tags"] and "area/docs" not in fm["tags"]
     assert cc.unwrap_wikilink(fm["program"]) == "managing-ai-activities"
+
+
+def test_cmd_set_summary_writes_the_field(cc, tmp_path, monkeypatch):
+    """Closes the last hand-edit gap for `summary` (there was no writer at all)."""
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "c")
+    card.write_text(card.read_text().replace("status: in-progress",
+                                             'status: in-progress\nsummary: ""'))
+    cc.cmd_set(_set_ns(str(card), summary="What this card is about"))
+    fm, _ = cc.read_card(str(card))
+    assert cc.unquote(fm["summary"]) == "What this card is about"
+
+
+def test_cmd_set_summary_inserts_when_field_absent(cc, tmp_path, monkeypatch):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "c")                      # make_card writes no summary line
+    cc.cmd_set(_set_ns(str(card), summary="Added later"))
+    fm, _ = cc.read_card(str(card))
+    assert cc.unquote(fm["summary"]) == "Added later"
+
+
+@pytest.mark.parametrize("summary", [
+    "White paper: data sources",       # colon — the cmd_new bug, same class
+    "Costs #hash and 'quotes'",
+    "",                                # explicit clear
+])
+def test_cmd_set_summary_is_quoted_so_prose_stays_valid_yaml(cc, tmp_path, monkeypatch, summary):
+    yaml = pytest.importorskip("yaml")
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "c")
+    cc.cmd_set(_set_ns(str(card), summary=summary))
+    fm_block = card.read_text().split("---\n")[1]
+    assert yaml.safe_load(fm_block)["summary"] == summary
+
+
+def test_cmd_set_without_summary_leaves_it_alone(cc, tmp_path, monkeypatch):
+    """`--summary` omitted must not blank an existing summary (None vs '' matters)."""
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "c")
+    card.write_text(card.read_text().replace("status: in-progress",
+                                             'status: in-progress\nsummary: "keep me"'))
+    cc.cmd_set(_set_ns(str(card), area="tools"))
+    fm, _ = cc.read_card(str(card))
+    assert cc.unquote(fm["summary"]) == "keep me"
 
 
 def test_cmd_set_roundtrip_add_then_remove_is_identical(cc, tmp_path, monkeypatch, capsys):
