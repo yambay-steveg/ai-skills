@@ -372,6 +372,69 @@ def test_link_refuses_missing_card(cc, tmp_path, monkeypatch, capsys):
     assert "no such card" in capsys.readouterr().err
 
 
+# ── unpin (clear the pin, keep the history) ─────────────────────────────────────
+def test_unpin_clears_session_id_and_keeps_history(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    sid = "11111111-2222-3333-4444-555555555555"
+    card = make_card(cards, "dormant", session=sid)
+    # make_card's extra_body lands *above* ## Sessions, so log the entry where cardctl
+    # writes it — under the heading — to prove unpin leaves the history alone.
+    card.write_text(card.read_text() + f"- `{sid}` — 2026-07-20 — did a thing\n")
+
+    cc.cmd_unpin(NS(card=str(card)))
+    fm, text = cc.read_card(str(card))
+    assert "sessionId" not in fm                       # pin gone
+    assert f"- `{sid}`" in text.split("## Sessions", 1)[1]   # history intact
+    assert "unpinned" in capsys.readouterr().out
+
+
+def test_unpin_already_unpinned_is_a_noop_not_an_error(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "never-pinned")
+    before = card.read_text()
+
+    cc.cmd_unpin(NS(card=str(card)))                  # no SystemExit
+    assert card.read_text() == before                 # byte-identical
+    assert "already unpinned" in capsys.readouterr().out
+
+
+def test_unpin_refuses_markdown_outside_cards_dirs(cc, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": tmp_path / "Cards"})
+    loose = tmp_path / "loose.md"
+    loose.write_text("---\ntitle: T\nstatus: backlog\nsessionId: dead-beef\n---\nbody\n")
+    before = loose.read_text()
+    with pytest.raises(SystemExit):
+        cc.cmd_unpin(NS(card=str(loose)))
+    assert "not inside a configured Cards/ folder" in capsys.readouterr().err
+    assert loose.read_text() == before                 # untouched
+
+
+def test_unpin_refuses_missing_card(cc, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": tmp_path / "Cards"})
+    with pytest.raises(SystemExit):
+        cc.cmd_unpin(NS(card=str(tmp_path / "Cards" / "ghost.md")))
+    assert "no such card" in capsys.readouterr().err
+
+
+def test_unpin_then_link_repins(cc, tmp_path, monkeypatch):
+    """unpin is the inverse of link, not a one-way door."""
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(cc, "PROJECTS", projects)
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    folder = tmp_path / "active" / "x"
+    folder.mkdir(parents=True)
+    card = make_card(cards, "round-trip", paths=[str(folder)], session="old-pin")
+    sid = fake_transcript(projects, str(folder))
+
+    cc.cmd_unpin(NS(card=str(card)))
+    assert "sessionId" not in cc.read_card(str(card))[0]
+    cc.cmd_link(NS(card=str(card), session=None, current=False, cwd=None, force=False))
+    assert cc.read_card(str(card))[0]["sessionId"] == sid
+
+
 # ── reconcile (dry-run; archived-only; shared-folder skip) ───────────────────────
 def _active_folder(tmp_path, name="x"):
     f = tmp_path / "repo" / "active" / name

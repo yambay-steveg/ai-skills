@@ -17,6 +17,7 @@ cardctl launch <card.md> --pick   # choose from the card's recent sessions (term
 cardctl launch <card.md> -d       # start in bypassPermissions mode (skip approvals)
 cardctl link   <card.md> --current   # pin the running session + log it under ## Sessions
 cardctl link   <card.md> --session ID # pin a specific session id (e.g. one that ran elsewhere)
+cardctl unpin  <card.md>          # clear the sessionId pin (## Sessions history kept); inverse of link
 cardctl new    <slug> --title …   # scaffold a card in the Domain vault's Cards/ folder
 cardctl set-status <card.md> <s>  # set lifecycle status (single writer of the field; surfaces delegate here)
 cardctl set <card.md> [--area … --program … --raised-at … --customer … --add-tag … --remove-tag … --add-path …]  # write metadata (the /card-model apply-on-confirm writer)
@@ -344,6 +345,16 @@ fills in the **"— what it did"** note. The frontmatter `sessionId` marks the *
 `## Sessions` is the durable history. Re-pinning is non-destructive — the old pin stays logged.
 (`--force` is accepted but no longer needed.)
 
+### `unpin` — clear the pin, keep the history
+
+`cardctl unpin <card.md>` removes the `sessionId` line and leaves `## Sessions` untouched, so the
+next `launch` starts a **fresh** session in the card's own folder instead of resuming a stale or
+wrongly-scoped one. This is the normal lifecycle action for standing/dormant cards (e.g. after an
+origin session that ran at a repo root rather than the activity folder) — before it existed, the
+only way to unpin was hand-editing frontmatter, which is exactly what cardctl's single-writer rule
+forbids. Already-unpinned cards are a no-op, not an error. Same guards as `set-status`: the card
+must exist and sit inside a configured `Cards/` folder.
+
 ## Card schema
 
 Cards live in the Domain vault's `Cards/` folder (R10/R13); `cardctl` takes a card path as its
@@ -360,7 +371,7 @@ latest: One line — current state and/or next step
 tags: [area/tools]    # facet tags only: area/*, kind/*, jira/*
 program: "[[Work Ops]]"            # hierarchy via wikilinks (on a project card)
 # --- plumbing (cardctl; hidden on the board) ---
-sessionId: <uuid>     # optional pin; set by `link` or hand-filled
+sessionId: <uuid>     # optional pin; set by `link`, cleared by `unpin` (never hand-edited)
 paths:                # context folders — activity folder FIRST (= session cwd), then source repos
   - /path/to/activity-folder    # auto-created by `new` at <active-root>/<slug>
   - /path/to/source-repo        # additional existing folder (--path); linked, not created
