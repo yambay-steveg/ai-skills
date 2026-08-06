@@ -372,6 +372,69 @@ def test_link_refuses_missing_card(cc, tmp_path, monkeypatch, capsys):
     assert "no such card" in capsys.readouterr().err
 
 
+# ── unpin (clear the pin, keep the history) ─────────────────────────────────────
+def test_unpin_clears_session_id_and_keeps_history(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    sid = "11111111-2222-3333-4444-555555555555"
+    card = make_card(cards, "dormant", session=sid)
+    # make_card's extra_body lands *above* ## Sessions, so log the entry where cardctl
+    # writes it — under the heading — to prove unpin leaves the history alone.
+    card.write_text(card.read_text() + f"- `{sid}` — 2026-07-20 — did a thing\n")
+
+    cc.cmd_unpin(NS(card=str(card)))
+    fm, text = cc.read_card(str(card))
+    assert "sessionId" not in fm                       # pin gone
+    assert f"- `{sid}`" in text.split("## Sessions", 1)[1]   # history intact
+    assert "unpinned" in capsys.readouterr().out
+
+
+def test_unpin_already_unpinned_is_a_noop_not_an_error(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "never-pinned")
+    before = card.read_text()
+
+    cc.cmd_unpin(NS(card=str(card)))                  # no SystemExit
+    assert card.read_text() == before                 # byte-identical
+    assert "already unpinned" in capsys.readouterr().out
+
+
+def test_unpin_refuses_markdown_outside_cards_dirs(cc, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": tmp_path / "Cards"})
+    loose = tmp_path / "loose.md"
+    loose.write_text("---\ntitle: T\nstatus: backlog\nsessionId: dead-beef\n---\nbody\n")
+    before = loose.read_text()
+    with pytest.raises(SystemExit):
+        cc.cmd_unpin(NS(card=str(loose)))
+    assert "not inside a configured Cards/ folder" in capsys.readouterr().err
+    assert loose.read_text() == before                 # untouched
+
+
+def test_unpin_refuses_missing_card(cc, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": tmp_path / "Cards"})
+    with pytest.raises(SystemExit):
+        cc.cmd_unpin(NS(card=str(tmp_path / "Cards" / "ghost.md")))
+    assert "no such card" in capsys.readouterr().err
+
+
+def test_unpin_then_link_repins(cc, tmp_path, monkeypatch):
+    """unpin is the inverse of link, not a one-way door."""
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(cc, "PROJECTS", projects)
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    folder = tmp_path / "active" / "x"
+    folder.mkdir(parents=True)
+    card = make_card(cards, "round-trip", paths=[str(folder)], session="old-pin")
+    sid = fake_transcript(projects, str(folder))
+
+    cc.cmd_unpin(NS(card=str(card)))
+    assert "sessionId" not in cc.read_card(str(card))[0]
+    cc.cmd_link(NS(card=str(card), session=None, current=False, cwd=None, force=False))
+    assert cc.read_card(str(card))[0]["sessionId"] == sid
+
+
 # ── reconcile (dry-run; archived-only; shared-folder skip) ───────────────────────
 def _active_folder(tmp_path, name="x"):
     f = tmp_path / "repo" / "active" / name
@@ -1914,6 +1977,34 @@ def test_new_default_creates_activity_folder_as_primary(cc, tmp_path, monkeypatc
     assert "created activity folder" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("title", [
+    "White paper: Data sources and partitioning",   # colon → invalid YAML unquoted
+    "Trailing space and #hash",
+    "Plain title",
+])
+def test_new_quotes_title_so_punctuation_survives_the_round_trip(cc, tmp_path, monkeypatch, title):
+    """A colon in --title used to be written bare, producing `title: a: b` — invalid YAML
+    that breaks Obsidian's frontmatter parse. Titles are quoted like summary/latest, and
+    read back through the same unquote() every consumer (list --json, which) uses."""
+    cards, _ = _wire_new(cc, tmp_path, monkeypatch)
+    cc.cmd_new(_new_ns("wp-card", title=title))
+    raw, _ = cc.read_card(str(cards / "wp-card.md"))
+    assert raw["title"].startswith('"') and raw["title"].endswith('"')   # written quoted
+    assert cc.unquote(raw["title"]) == title                            # and reads back intact
+
+
+def test_new_title_with_colon_is_valid_yaml_for_obsidian(cc, tmp_path, monkeypatch):
+    """The actual reported symptom: Obsidian parses the frontmatter as real YAML, so a
+    colon in the title must not break that parse. Asserted with a real YAML parser
+    rather than cardctl's own scalar reader."""
+    yaml = pytest.importorskip("yaml")
+    cards, _ = _wire_new(cc, tmp_path, monkeypatch)
+    title = "White paper: Data sources and partitioning"
+    cc.cmd_new(_new_ns("wp-yaml", title=title))
+    fm_block = (cards / "wp-yaml.md").read_text().split("---\n")[1]
+    assert yaml.safe_load(fm_block)["title"] == title
+
+
 def test_new_path_entries_appended_after_activity_and_not_created(cc, tmp_path, monkeypatch):
     cards, active = _wire_new(cc, tmp_path, monkeypatch)
     existing = tmp_path / "monorepo"
@@ -2161,7 +2252,7 @@ def test_launch_delay_default_matches_docs(cc):
 
 # ── set: the metadata writer ────────────────────────────────────────────────────
 def _set_ns(card, **kw):
-    base = dict(card=card, area=None, add_area=None, program=None,
+    base = dict(card=card, summary=None, area=None, add_area=None, program=None,
                 raised_at=None, add_tag=None, remove_tag=None,
                 add_path=None, remove_path=None, customer=None)
     base.update(kw)
@@ -2199,6 +2290,54 @@ def test_cmd_set_area_replaces_and_adds_program(cc, tmp_path, monkeypatch, capsy
     fm, _ = cc.read_card(str(card))
     assert "area/v7" in fm["tags"] and "area/docs" not in fm["tags"]
     assert cc.unwrap_wikilink(fm["program"]) == "managing-ai-activities"
+
+
+def test_cmd_set_summary_writes_the_field(cc, tmp_path, monkeypatch):
+    """Closes the last hand-edit gap for `summary` (there was no writer at all)."""
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "c")
+    card.write_text(card.read_text().replace("status: in-progress",
+                                             'status: in-progress\nsummary: ""'))
+    cc.cmd_set(_set_ns(str(card), summary="What this card is about"))
+    fm, _ = cc.read_card(str(card))
+    assert cc.unquote(fm["summary"]) == "What this card is about"
+
+
+def test_cmd_set_summary_inserts_when_field_absent(cc, tmp_path, monkeypatch):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "c")                      # make_card writes no summary line
+    cc.cmd_set(_set_ns(str(card), summary="Added later"))
+    fm, _ = cc.read_card(str(card))
+    assert cc.unquote(fm["summary"]) == "Added later"
+
+
+@pytest.mark.parametrize("summary", [
+    "White paper: data sources",       # colon — the cmd_new bug, same class
+    "Costs #hash and 'quotes'",
+    "",                                # explicit clear
+])
+def test_cmd_set_summary_is_quoted_so_prose_stays_valid_yaml(cc, tmp_path, monkeypatch, summary):
+    yaml = pytest.importorskip("yaml")
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "c")
+    cc.cmd_set(_set_ns(str(card), summary=summary))
+    fm_block = card.read_text().split("---\n")[1]
+    assert yaml.safe_load(fm_block)["summary"] == summary
+
+
+def test_cmd_set_without_summary_leaves_it_alone(cc, tmp_path, monkeypatch):
+    """`--summary` omitted must not blank an existing summary (None vs '' matters)."""
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "c")
+    card.write_text(card.read_text().replace("status: in-progress",
+                                             'status: in-progress\nsummary: "keep me"'))
+    cc.cmd_set(_set_ns(str(card), area="tools"))
+    fm, _ = cc.read_card(str(card))
+    assert cc.unquote(fm["summary"]) == "keep me"
 
 
 def test_cmd_set_roundtrip_add_then_remove_is_identical(cc, tmp_path, monkeypatch, capsys):

@@ -16,6 +16,7 @@ cardctl launch <card.md> --new    # start a FRESH session (ignore pin / latest)
 cardctl launch <card.md> --pick   # choose from the card's recent sessions (terminal only)
 cardctl link   <card.md> --current   # pin the running session + log it under ## Sessions
 cardctl link   <card.md> --session ID # pin a specific session id (e.g. one that ran elsewhere)
+cardctl unpin  <card.md>          # clear the sessionId pin (## Sessions history kept); inverse of link
 cardctl new    <slug> --title …   # scaffold a card in the Domain vault's Cards/ folder
 cardctl set-status <card.md> <s>  # set lifecycle status (single writer of the field; surfaces delegate here)
 cardctl set <card.md> [--area … --program … --raised-at … --customer … --add-tag … --remove-tag … --add-path …]  # write metadata (the /card-model apply-on-confirm writer)
@@ -70,12 +71,14 @@ title/summary — a *candidate* for a Program/Forum note, the skill + you make t
 ## `set` — metadata writer (the apply-on-confirm fixes)
 
 The validated writer behind `/card-model`'s low-risk fixes. Scope is deliberately reversible
-metadata — the `area/*` facet, extra facet tags, and the `program:`/`raised-at:` link-properties.
+metadata — the `summary` line, the `area/*` facet, extra facet tags, and the
+`program:`/`raised-at:` link-properties.
 It refuses any file outside a configured `Cards/` folder and never touches `status` (that stays
 with `set-status`) or renames notes (an Obsidian-API job). Adding a link-property *value* to a card
 is a create/edit, so a filesystem write is correct here.
 
 ```bash
+cardctl set <card.md> --summary "one-line what this is"  # the board's standing summary line
 cardctl set <card.md> --area area/v7                 # replace the area/* facet
 cardctl set <card.md> --program managing-ai-activities  # set/repoint program: "[[…]]" home link
 cardctl set <card.md> --raised-at e-and-a            # set raised-at: "[[…]]" provenance link
@@ -88,6 +91,21 @@ cardctl set <card.md> --remove-path ~/Source/work/…  # remove a folder from pa
 
 Existing inline (`tags: [a, b]`) vs block (`tags:\n  - a`) form is preserved; edits are surgical
 so the vault git diff stays minimal.
+
+**Adding a folder to a card (a repo, a monorepo worktree) is `--add-path`, not a VS Code action.**
+The `.code-workspace` is *generated* from the card's `paths` at
+`~/.cache/session-cards/<card>.code-workspace` and rewritten on **every** launch, so a folder added
+via VS Code's "Add Folder to Workspace" survives until the next launch and is then silently
+discarded. The card is the source of truth; the workspace file is a derived artefact. Create the
+folder first — `--add-path` only warns if it doesn't exist, leaving a folder that never appears.
+
+`--summary` is quoted through the same YAML quoter as `cardctl new`, so prose containing a colon
+or hash can't break Obsidian's frontmatter parse. Omitting the flag leaves an existing summary
+untouched; passing `--summary ""` clears it deliberately.
+
+There is deliberately **no `--latest` writer yet**: whether `latest` is a human glance line or an
+AI handoff note is an open convention question, and automating the wrong answer is worse than the
+current hand-edit. `latest` and the `## Sessions` log remain the two sanctioned hand-edits.
 
 ## `list` — the board's read interface
 
@@ -344,6 +362,16 @@ fills in the **"— what it did"** note. The frontmatter `sessionId` marks the *
 `## Sessions` is the durable history. Re-pinning is non-destructive — the old pin stays logged.
 (`--force` is accepted but no longer needed.)
 
+### `unpin` — clear the pin, keep the history
+
+`cardctl unpin <card.md>` removes the `sessionId` line and leaves `## Sessions` untouched, so the
+next `launch` starts a **fresh** session in the card's own folder instead of resuming a stale or
+wrongly-scoped one. This is the normal lifecycle action for standing/dormant cards (e.g. after an
+origin session that ran at a repo root rather than the activity folder) — before it existed, the
+only way to unpin was hand-editing frontmatter, which is exactly what cardctl's single-writer rule
+forbids. Already-unpinned cards are a no-op, not an error. Same guards as `set-status`: the card
+must exist and sit inside a configured `Cards/` folder.
+
 ## Card schema
 
 Cards live in the Domain vault's `Cards/` folder (R10/R13); `cardctl` takes a card path as its
@@ -360,7 +388,7 @@ latest: One line — current state and/or next step
 tags: [area/tools]    # facet tags only: area/*, kind/*, jira/*
 program: "[[Work Ops]]"            # hierarchy via wikilinks (on a project card)
 # --- plumbing (cardctl; hidden on the board) ---
-sessionId: <uuid>     # optional pin; set by `link` or hand-filled
+sessionId: <uuid>     # optional pin; set by `link`, cleared by `unpin` (never hand-edited)
 paths:                # context folders — activity folder FIRST (= session cwd), then source repos
   - /path/to/activity-folder    # auto-created by `new` at <active-root>/<slug>
   - /path/to/source-repo        # additional existing folder (--path); linked, not created
