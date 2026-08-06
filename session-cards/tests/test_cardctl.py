@@ -7,6 +7,7 @@ are monkeypatched per test.
 import json
 import os
 import re
+import subprocess
 import uuid
 from pathlib import Path
 
@@ -513,6 +514,79 @@ def test_merge_templater_preserves_other_keys(cc):
 
 
 # ── deploy: surface application against a temp vault ─────────────────────────────
+def _git_repo(path, branch="main"):
+    """A real throwaway git repo on `branch` — the guard shells out to git, so fake it honestly."""
+    path.mkdir(parents=True, exist_ok=True)
+    env = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null",
+           "PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": str(path)}
+    def git(*a):
+        subprocess.run(["git", "-C", str(path), *a], check=True, env=env,
+                       capture_output=True, text=True)
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@t"); git("config", "user.name", "t")
+    (path / "f").write_text("x")
+    git("add", "."); git("commit", "-qm", "init")
+    if branch != "main":
+        git("checkout", "-q", "-b", branch)
+    return path
+
+
+def test_guard_allows_deploy_from_main(cc, tmp_path, monkeypatch):
+    monkeypatch.setattr(cc, "REPO", _git_repo(tmp_path / "r"))
+    cc.guard_deploy_source(force=False)          # no SystemExit
+
+
+def test_guard_refuses_deploy_from_a_feature_branch(cc, tmp_path, monkeypatch, capsys):
+    """The 6 Aug near-miss: the fallback REPO sat on cardctl-customer-edge."""
+    monkeypatch.setattr(cc, "REPO", _git_repo(tmp_path / "r", branch="cardctl-customer-edge"))
+    with pytest.raises(SystemExit):
+        cc.guard_deploy_source(force=False)
+    err = capsys.readouterr().err
+    assert "cardctl-customer-edge" in err        # names the branch
+    assert "--force" in err                      # names the escape hatch
+
+
+def test_guard_force_warns_but_proceeds(cc, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cc, "REPO", _git_repo(tmp_path / "r", branch="wip"))
+    cc.guard_deploy_source(force=True)           # no SystemExit
+    assert "warning" in capsys.readouterr().err
+
+
+def test_guard_refuses_detached_head(cc, tmp_path, monkeypatch, capsys):
+    repo = _git_repo(tmp_path / "r")
+    env = {"GIT_CONFIG_GLOBAL": "/dev/null", "PATH": "/usr/bin:/bin", "HOME": str(repo)}
+    sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True,
+                         text=True, env=env).stdout.strip()
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", sha], check=True, env=env,
+                   capture_output=True)
+    monkeypatch.setattr(cc, "REPO", repo)
+    with pytest.raises(SystemExit):
+        cc.guard_deploy_source(force=False)
+    assert "undeterminable" in capsys.readouterr().err
+
+
+def test_guard_refuses_when_source_is_not_a_git_checkout(cc, tmp_path, monkeypatch):
+    """Can't name the source → can't claim it's releasable."""
+    monkeypatch.setattr(cc, "REPO", tmp_path / "not-a-repo")
+    (tmp_path / "not-a-repo").mkdir()
+    with pytest.raises(SystemExit):
+        cc.guard_deploy_source(force=False)
+
+
+def test_cmd_deploy_is_actually_guarded_before_writing(cc, tmp_path, monkeypatch, capsys):
+    """Wiring test: the refusal must happen before any surface is touched."""
+    repo = _git_repo(tmp_path / "r", branch="feature")
+    (repo / "deploy").mkdir()
+    monkeypatch.setattr(cc, "REPO", repo)
+    monkeypatch.setattr(cc, "DEPLOY_SRC", repo / "deploy")
+    bin_dir = tmp_path / "bin"
+    monkeypatch.setattr(cc, "BIN", bin_dir)
+    with pytest.raises(SystemExit):
+        cc.cmd_deploy(NS(domain="all", apply=True, force=False))
+    assert not bin_dir.exists()                  # nothing written
+    assert "refusing to deploy" in capsys.readouterr().err
+
+
 def test_deploy_copy_surface_creates_then_idempotent(cc, tmp_path, monkeypatch):
     # point DEPLOY_SRC at the real canonical sources
     src = Path(cc.__file__).resolve().parent / "deploy"
