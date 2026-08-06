@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Claude Code SessionStart hook.
-# 1. AWST time context (always).
+# 1. Time context — home timezone, or a travel timezone while a trip is running.
 # 2. If the session's cwd maps to a session-card, inject that card's status/latest/
 #    open-actions so the session lands card-aware (and the card link self-caches).
 # Source of truth: ai-skills/bin/session-start-hook.sh — synced to ~/bin/session-start-hook.sh.
@@ -9,9 +9,43 @@
 input=$(cat 2>/dev/null)
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 
-dt=$(TZ='Australia/Perth' date '+%Y-%m-%d %H:%M')
-dow=$(TZ='Australia/Perth' date '+%A')
-msg="Current time: ${dt} AWST (${dow}). Steve works in AWST (UTC+8) — convert all timestamps (Jira, git, calendar, email) to AWST before reporting, bucketing by day, or quoting times. Display times as AWST unless asked otherwise."
+# ── Timezone ────────────────────────────────────────────────────────────────────
+# Sessions must report Steve's *current* local time, not his home time, or every
+# day-bucketed summary lands on the wrong day while he's away.
+#
+# To declare a trip, set both values below (or export them for a one-off) — the trip
+# then expires by itself, so a forgotten edit can't leave sessions reporting the wrong
+# zone for months:
+#   TRAVEL_TZ='Europe/London'   # IANA zone while away
+#   TRAVEL_UNTIL='2026-08-05'   # last day away, INCLUSIVE; reverts home the next day
+# Leave TRAVEL_TZ empty when home. Both are overridable from the environment, so a
+# trip can be simulated (and tested) without editing this file.
+HOME_TZ="${HOME_TZ:-Australia/Perth}"
+TRAVEL_TZ="${TRAVEL_TZ:-}"
+TRAVEL_UNTIL="${TRAVEL_UNTIL:-}"
+
+tz="$HOME_TZ"
+away=0
+if [ -n "$TRAVEL_TZ" ] && [ -n "$TRAVEL_UNTIL" ]; then
+  # Lexicographic compare is correct for ISO-8601 dates, and needs no date parsing.
+  # Evaluated in the travel zone, so the revert happens on Steve's local midnight.
+  if [[ "$(TZ="$TRAVEL_TZ" date '+%Y-%m-%d')" < "$TRAVEL_UNTIL" || \
+        "$(TZ="$TRAVEL_TZ" date '+%Y-%m-%d')" == "$TRAVEL_UNTIL" ]]; then
+    tz="$TRAVEL_TZ"
+    away=1
+  fi
+fi
+
+dt=$(TZ="$tz" date '+%Y-%m-%d %H:%M')
+dow=$(TZ="$tz" date '+%A')
+zone=$(TZ="$tz" date '+%Z')
+off=$(TZ="$tz" date '+%z')
+if [ "$away" -eq 1 ]; then
+  where="Steve is travelling (${TRAVEL_TZ}) until ${TRAVEL_UNTIL}, so report local time (${zone}, UTC${off})"
+else
+  where="Steve works in ${zone} (UTC${off})"
+fi
+msg="Current time: ${dt} ${zone} (${dow}). ${where} — convert all timestamps (Jira, git, calendar, email) to ${zone} before reporting, bucketing by day, or quoting times. Display times as ${zone} unless asked otherwise."
 
 if [ -n "$cwd" ]; then
   card=$(/Users/steve/bin/cardctl which "$cwd" --record --quiet 2>/dev/null)
