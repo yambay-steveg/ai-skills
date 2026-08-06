@@ -220,7 +220,22 @@ board/template/button/Templater/hook config drifts as it's hand-copied work↔pe
 ```bash
 cardctl deploy work          # dry-run: show what would change in the work vault + ~/bin
 cardctl deploy all --apply   # write changes to BOTH vaults + ~/bin
+cardctl deploy all --force   # deploy from a non-main checkout (deliberate; warns loudly)
 ```
+
+**Deploy refuses to run from a source checkout that isn't on `main`.** This matters more than it
+looks: deploy ships whatever tree it reads to `~/bin` **and both live vaults**, and when cardctl is
+invoked as the installed `~/bin` copy, its source is a *hardcoded fallback path*
+(`~/Source/work/yambay-steveg/ai-skills/session-cards`) rather than your current directory. So the
+source can silently be a feature branch you forgot was checked out there — which has happened twice:
+the July slice-1a brief was written against a stale checkout, and on 6 Aug that clone was sitting on
+`cardctl-customer-edge` with an unmerged commit while three merged PRs were being deployed. A
+detached or undeterminable HEAD is refused too: if the source can't be named, it can't be called
+releasable. `--force` overrides and says so on stderr.
+
+Note the fallback path can't always hold `main` — if another worktree has `main` checked out, git
+won't let that clone switch to it. Run deploy from the worktree that *does* hold `main`:
+`python3 <main-worktree>/session-cards/cardctl deploy all --apply`.
 
 **Canonical sources** live under `ai-skills/session-cards/deploy/`:
 

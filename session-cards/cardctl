@@ -1272,9 +1272,57 @@ def _deploy_bin(apply):
     return out
 
 
+def deploy_source_branch():
+    """The branch `REPO` is on, or None if it can't be determined (not a checkout, no git).
+
+    Deploy ships whatever tree `REPO` happens to hold — and when cardctl is invoked as the
+    installed `~/bin` copy, `REPO` is a *hardcoded fallback path*, not the caller's cwd. So
+    the source can silently be a feature branch nobody meant to release.
+    """
+    try:
+        res = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--abbrev-ref", "HEAD"],
+                             capture_output=True, text=True, timeout=10)
+    except Exception:
+        return None
+    branch = res.stdout.strip()
+    if res.returncode != 0 or not branch or branch == "HEAD":
+        # `--abbrev-ref HEAD` prints the literal "HEAD" on a detached checkout, which would
+        # otherwise be reported as a branch named HEAD.
+        return None
+    return branch
+
+
+def guard_deploy_source(force):
+    """Refuse to deploy from a source checkout that isn't on `main`.
+
+    Deploying a feature branch writes half-finished work to `~/bin` and both live vaults,
+    and nothing in the output says which branch it came from — the failure is silent and
+    only shows up later as behaviour nobody shipped. This has bitten twice: the July slice-1a
+    brief was written against a stale checkout, and on 6 Aug the fallback `REPO` was sitting
+    on `cardctl-customer-edge` with an unmerged commit while three PRs were being deployed.
+
+    Detached HEAD and undeterminable branches are also refused: if we can't name the source,
+    we can't claim it's releasable. `--force` overrides for a deliberate off-main deploy, and
+    says so loudly rather than passing silently.
+    """
+    branch = deploy_source_branch()
+    if branch == "main":
+        return
+    where = f"branch {branch!r}" if branch else "an undeterminable branch (detached HEAD?)"
+    if force:
+        print(f"cardctl: warning — deploying from {where}, not main (--force)", file=sys.stderr)
+        return
+    die(f"refusing to deploy: source checkout {REPO} is on {where}, not main.\n"
+        f"  Deploy ships that tree to ~/bin and both vaults, so a feature branch would go live.\n"
+        f"  Fix: run cardctl from a checkout on main (`python3 <main-checkout>/session-cards/cardctl "
+        f"deploy …`),\n"
+        f"  or pass --force if deploying this branch is deliberate.")
+
+
 def cmd_deploy(args):
     if not DEPLOY_SRC.is_dir():
         die(f"deploy sources not found at {DEPLOY_SRC} (run from the ai-skills repo)")
+    guard_deploy_source(args.force)
     domains = list(CARDS_DIRS) if args.domain == "all" else [args.domain]
     tag = "APPLY" if args.apply else "DRY "
     any_change = False
@@ -2436,6 +2484,9 @@ def main():
     pd.add_argument("domain", choices=list(CARDS_DIRS) + ["all"],
                     help="which vault to deploy to (or 'all')")
     pd.add_argument("--apply", action="store_true", help="write the changes (default: dry run)")
+    pd.add_argument("--force", action="store_true",
+                    help="deploy even though the source checkout isn't on main (warns instead "
+                         "of refusing) — for a deliberate off-main deploy")
     pd.set_defaults(func=cmd_deploy)
 
     pls = sub.add_parser("list", help="list all cards across the Cards/ folders (--json for the board)")
