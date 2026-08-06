@@ -93,6 +93,13 @@ cardctl set <card.md> --remove-path ~/Source/work/…  # remove a folder from pa
 Existing inline (`tags: [a, b]`) vs block (`tags:\n  - a`) form is preserved; edits are surgical
 so the vault git diff stays minimal.
 
+**Adding a folder to a card (a repo, a monorepo worktree) is `--add-path`, not a VS Code action.**
+The `.code-workspace` is *generated* from the card's `paths` at
+`~/.cache/session-cards/<card>.code-workspace` and rewritten on **every** launch, so a folder added
+via VS Code's "Add Folder to Workspace" survives until the next launch and is then silently
+discarded. The card is the source of truth; the workspace file is a derived artefact. Create the
+folder first — `--add-path` only warns if it doesn't exist, leaving a folder that never appears.
+
 `--summary` is quoted through the same YAML quoter as `cardctl new`, so prose containing a colon
 or hash can't break Obsidian's frontmatter parse. Omitting the flag leaves an existing summary
 untouched; passing `--summary ""` clears it deliberately.
