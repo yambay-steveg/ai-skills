@@ -1,7 +1,7 @@
 ---
 skill: session-search
-version: 1.3.0
-updated: 2026-03-23
+version: 1.4.0
+updated: 2026-08-05
 trigger: "find session", "search session", "previous session", "resume session", "find conversation", "past conversation", "session about"
 ---
 
@@ -52,7 +52,34 @@ python3 ~/.claude/skills/session-search/search-sessions.py --list-recent 10
 | `--days N` | Only search sessions from the last N days |
 | `--list-recent N` | List N most recent sessions (ignores query) |
 | `--copy N` | Copy resume command for result #N to clipboard |
-| `--json` | Output as JSON for programmatic use |
+| `--json` | Output as JSON for programmatic use (see the contract below) |
+
+### `--json` is a machine contract
+
+Other tools consume this script by spawning it and parsing stdout — the session-card board
+does exactly that (the same way it consumes `cardctl`). So with `--json`:
+
+- **stdout carries only the JSON payload.** Progress lines ("Searching for: …", the
+  deep-search notice, "No matches in prompt history") go to **stderr**, so an interactive
+  user still sees them but a parser never does.
+- **"No matches" emits `[]`**, not empty stdout, so a caller can parse every outcome rather
+  than special-casing nothing-at-all.
+- **Exit status stays 0** for a successful search with zero results.
+
+Contract tests live in `tests/test_json_contract.py` (`python3 -m pytest
+skills/session-search/tests`). If you add output to this script, print it to stderr unless
+it is the payload.
+
+### Running it as a command
+
+`bin/session-search` (a symlink to this script) is deployed to `~/bin` the same way
+`cardctl` and `kb-lint` are:
+
+```bash
+cp bin/session-search ~/bin/session-search    # follows the symlink → real file
+```
+
+Never edit `~/bin/session-search`; it is a deployed copy, and the next deploy overwrites it.
 
 ## Workflow
 
