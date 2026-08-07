@@ -215,7 +215,7 @@ is deferred so launch can never be blocked on an un-granted permission.)
 
 Per the **one-management-home** principle (R10): the card system is maintained once, in this repo
 (`ai-skills/session-cards/`), then *deployed* to each Domain vault and to `~/bin`. Without it, the
-board/template/button/Templater/hook config drifts as it's hand-copied work↔personal.
+board/template/palette-command/Templater/hook config drifts as it's hand-copied work↔personal.
 
 ```bash
 cardctl deploy work          # dry-run: show what would change in the work vault + ~/bin
@@ -243,15 +243,14 @@ won't let that clone switch to it. Run deploy from the worktree that *does* hold
 | --- | --- | --- | --- |
 | Bases board | `deploy/Cards/board.base` | `Cards/board.base` | copy |
 | Card template | `deploy/Templates/card.md` | `Templates/card.md` | copy |
-| Shell Commands | `deploy/fragments/shellcommands.commands.json` | `.obsidian/plugins/obsidian-shellcommands/data.json` | **merge** our 3 commands into `shell_commands` by `id` |
-| Meta Bind buttons | `deploy/fragments/metabind.buttons.json` | `.obsidian/plugins/obsidian-meta-bind-plugin/data.json` | **merge** our 3 buttons into `buttonTemplates` by `id` |
+| Shell Commands | `deploy/fragments/shellcommands.commands.json` | `.obsidian/plugins/obsidian-shellcommands/data.json` | **merge** our 1 command into `shell_commands` by `id` |
 | Templater | `deploy/fragments/templater.folder-template.json` | `.obsidian/plugins/templater-obsidian/data.json` | **merge** the `Cards`→`Templates/card.md` folder-template + enabling flags |
 | Engine | `cardctl` | `~/bin/cardctl` | copy (+ `chmod 755`) — global, once |
 | SessionStart hook | `../bin/session-start-hook.sh` | `~/bin/session-start-hook.sh` | copy (+ `chmod 755`) — global, once |
 
 **Safety:** **dry-run by default** (`--apply` to write). Idempotent — only writes when content
 actually changes (re-running a clean deploy reports *everything up to date*). The three
-`.obsidian/*.json` files are **merged, never clobbered** — our commands/buttons/folder-template are
+`.obsidian/*.json` files are **merged, never clobbered** — our command/folder-template entries are
 replaced-by-id/key while every other plugin setting (and any unrelated commands) is preserved. Only
 the listed surfaces are touched — **never a vault's notes**. Editing a canonical source under
 `deploy/` and running `deploy all --apply` is the supported way to change the surfaces.
@@ -355,11 +354,20 @@ pure pointer card over `--path` folders; with no `--path` its `paths` is empty a
    behaviour. When Hammerspoon is unavailable it falls back to that fixed delay automatically,
    with a note.
 
-### Buttons (Obsidian)
+### Launching from Obsidian (R14: the board owns launching)
 
-The card's button bar maps to these, via Meta Bind templates → Shell Commands:
-**▶ Launch session** (`launch`) · **✦ New session** (`--new`) · **📌 Pin latest**
-(`link --force`). See the operating note for the wiring.
+**The in-note button bar is retired.** Cards carried a Meta Bind button bar (▶ Launch session ·
+✦ New session · 📌 Pin latest) wired through Shell Commands. It's gone: the board is the launch
+surface, a card body is a *record* rather than a control panel, and the Shell Commands plugin's
+settings UI is broken on current Obsidian (every tab throws; upstream's last release was Nov 2024),
+so it was an unmaintained dependency in the middle of the primary workflow.
+
+What remains in Obsidian is **one command-palette entry**, "Launch card" (`cardctl launch <file>`),
+kept deliberately as a keyboard route into a card if the board is ever down. Everything else —
+new session, pin, focus — happens on the board.
+
+`cmd_new` therefore writes **no** button bar, and the deployed template has none: otherwise every
+new card would re-seed the retired buttons one at a time.
 
 ### `link` — pin a session + log history
 
@@ -419,7 +427,7 @@ Note: `cardctl` only reads `paths`/`sessionId`; the rest are for the board/graph
 ## Status / tested
 
 - ✅ `launch` — resume (pin / latest-for-folder) and start-new, multi-root, origin auto-prepended;
-  `--pick` chooser. Driven from Obsidian via the 3-button bar.
+  `--pick` chooser. Driven from the board (and the one "Launch card" palette command).
 - ✅ `link` — captures newest session id, preserves the rest of the card file (`--force` to repin).
 - ✅ `new` — scaffolds a card; auto-creates the activity folder from the slug at `<active-root>/<slug>`
   as `paths[0]` (`--path` = additional existing folders, appended after; `--no-folder` to opt out).

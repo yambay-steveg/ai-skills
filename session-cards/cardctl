@@ -94,9 +94,6 @@ ACTIVE_ROOTS = {
     "work": Path.home() / "Source/work/yambay-steveg/claude-code-steveg/active",
     "personal": Path.home() / "Source/personal/ai-tasks/active",
 }
-BUTTON_BAR = ("`BUTTON[launch-card]` `BUTTON[new-session]` "
-              "`BUTTON[pin-session]`")
-
 # The card lifecycle vocabulary. `set-status` accepts only these; `reconcile`
 # keys off `archived`. Surfaces (e.g. the board) must change status through
 # cardctl, not by writing the file, so this stays the single source of truth.
@@ -872,7 +869,9 @@ def cmd_new(args):
     sessions = "\n## Sessions\n\n"
     if args.session:
         sessions += f"- `{args.session}` — {session_date(args.session) or '?'}  — (current)\n"
-    body = (f"\n{BUTTON_BAR}\n\n{args.summary or '<one line; deep state lives in the activity folder>'}\n"
+    # No in-note button bar: launching is the board's job (R14). A card body is the
+    # human-readable record, not a control surface.
+    body = (f"\n{args.summary or '<one line; deep state lives in the activity folder>'}\n"
             f"{sessions}")
     dest.write_text("---\n" + "\n".join(fm) + "\n---\n" + body)
     print(f"created {dest}")
@@ -1204,10 +1203,12 @@ def merge_templater(existing, frag):
 DEPLOY_SURFACES = [
     ("board.base",     "Cards/board.base",       "copy", "Cards/board.base"),
     ("card template",  "Templates/card.md",      "copy", "Templates/card.md"),
+    # Shell Commands keeps ONE entry: "Launch card" in the command palette, a keyboard
+    # route into a card if the board is down. The in-note button bar (Meta Bind) is
+    # retired — launching is the board's job (R14) — so that surface is gone entirely
+    # rather than deployed empty.
     ("shell commands", ".obsidian/plugins/obsidian-shellcommands/data.json",
      "array:shell_commands", "fragments/shellcommands.commands.json"),
-    ("meta-bind buttons", ".obsidian/plugins/obsidian-meta-bind-plugin/data.json",
-     "array:buttonTemplates", "fragments/metabind.buttons.json"),
     ("templater config", ".obsidian/plugins/templater-obsidian/data.json",
      "templater", "fragments/templater.folder-template.json"),
 ]
