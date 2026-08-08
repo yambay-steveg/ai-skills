@@ -81,7 +81,8 @@ is a create/edit, so a filesystem write is correct here.
 
 ```bash
 cardctl set <card.md> --summary "one-line what this is"  # the board's standing summary line
-cardctl set <card.md> --area area/v7                 # replace the area/* facet
+cardctl set <card.md> --area area/v7                 # replace the area/* facet (warns if unused elsewhere)
+cardctl new <slug> --area v7 --strict                # refuse an area no existing card uses
 cardctl set <card.md> --program managing-ai-activities  # set/repoint program: "[[…]]" home link
 cardctl set <card.md> --raised-at e-and-a            # set raised-at: "[[…]]" provenance link
 cardctl set <card.md> --customer sce                 # set customer: "[[…]]" stakeholder link (Customers/<slug>)
@@ -93,6 +94,8 @@ cardctl set <card.md> --remove-path ~/Source/work/…  # remove a folder from pa
 
 Existing inline (`tags: [a, b]`) vs block (`tags:\n  - a`) form is preserved; edits are surgical
 so the vault git diff stays minimal.
+
+**Facet membership is advisory (A4.4).** `new` and `set` validate an area's *shape* and then check whether any existing card already uses it — because the failure that actually happens is a well-formed typo (`area/tool` for `area/tools`), which passes every other check and silently mints a rival facet only `lint` notices later. Unknown areas print a note naming the near-misses and the areas in use, then proceed; `--strict` refuses instead. It stays advisory by default because the first card in a genuinely new area must not be blocked by a check whose only evidence is "nobody has used this yet". The vocabulary spans **both** vaults — areas are one taxonomy.
 
 **Adding a folder to a card (a repo, a monorepo worktree) is `--add-path`, not a VS Code action.**
 The `.code-workspace` is *generated* from the card's `paths` at

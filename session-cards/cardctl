@@ -803,6 +803,53 @@ def _step_desc(e):
     return f"step failed: {e}"
 
 
+def known_areas():
+    """Every `area/<slug>` already in use across the card store, as a sorted list.
+
+    The vocabulary is emergent — there is no registry — so "in use by another card" is the
+    only definition of a real area available to the CLI. Deliberately spans **both** domains:
+    the areas are one taxonomy, and a work card shouldn't be told `area/home` is unknown.
+    """
+    found = set()
+    for c in _all_card_files():
+        try:
+            fm, _ = read_card(c)
+        except SystemExit:
+            continue          # a malformed card shouldn't break an advisory check
+        for t in fm.get("tags") or []:
+            t = str(t).strip()
+            if t.startswith("area/") and t[len("area/"):]:
+                found.add(t[len("area/"):])
+    return sorted(found)
+
+
+def warn_unknown_area(slug, strict=False):
+    """Warn (or die, with --strict) when an area isn't used by any existing card.
+
+    Shape validation already passed by here, and a well-formed typo is the failure that
+    matters: `area/tool` for `area/tools` is accepted everywhere, silently mints a rival
+    facet, and is only caught later by `cardctl lint`. The board's create form closes this
+    with a picker; cards made from the CLI had nothing.
+
+    Advisory by default on purpose — the first card in a genuinely new area must not be
+    blocked by a check whose only evidence is "nobody has used this yet".
+    """
+    if not slug:
+        return
+    known = known_areas()
+    if slug in known:
+        return
+    near = [k for k in known if k.startswith(slug[:3]) or slug.startswith(k[:3])]
+    hint = f" Did you mean: {', '.join(near)}?" if near else ""
+    msg = (f"area/{slug} is not used by any existing card.{hint}"
+           f"\n  In use: {', '.join(known) or '(none)'}")
+    if strict:
+        die(f"refusing to create a new area facet: {msg}\n"
+            f"  Drop --strict to create it anyway.")
+    print(f"cardctl: note — {msg}\n  Creating it. Use --strict to refuse instead.",
+          file=sys.stderr)
+
+
 def _all_card_files():
     """Every card `.md` across the configured Cards/ folders, sorted."""
     cards = []
@@ -922,6 +969,9 @@ def cmd_new(args):
         a = args.area[5:] if args.area.startswith("area/") else args.area
         if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", a):
             die(f"invalid --area {args.area!r} — expected area/<kebab-slug>")
+        # Shape is fine by here; the failure that actually happens is a well-formed typo
+        # (area/tool for area/tools), which nothing catches until `lint` runs.
+        warn_unknown_area(a, strict=args.strict)
         args.area = f"area/{a}"
     cards.mkdir(parents=True, exist_ok=True)
     dest = cards / f"{args.slug}.md"
@@ -2232,6 +2282,7 @@ def cmd_set(args):
     new_tags = list(tags)
     if args.area:
         a = args.area if args.area.startswith("area/") else f"area/{args.area}"
+        warn_unknown_area(a[len("area/"):], strict=args.strict)
         new_tags = [t for t in new_tags if not t.startswith("area/")] + [a]
         changes.append(("area", a))
     for raw in (args.add_area or []):
@@ -2541,6 +2592,8 @@ def main():
     pn.add_argument("--session", help="pin this session id (e.g. from `session-search`)")
     pn.add_argument("--jira", help="Jira key → jira/<KEY> tag")
     pn.add_argument("--area", help="area/* facet tag, e.g. area/v7")
+    pn.add_argument("--strict", action="store_true",
+                    help="refuse an area no existing card uses (default: warn and create it)")
     pn.add_argument("--program", help="program name → program: \"[[name]]\" link")
     pn.add_argument("--status", default="in-progress")
     pn.add_argument("--type", default="project",
@@ -2569,6 +2622,8 @@ def main():
                                       "for Steve, NOT next-session instructions (those go in the "
                                       "activity folder's HANDOFF.md)")
     pst.add_argument("--area", help="set the area/* facet (replaces any existing area/* tag)")
+    pst.add_argument("--strict", action="store_true",
+                    help="refuse an area no existing card uses (default: warn and set it)")
     pst.add_argument("--add-area", action="append", help="add an additional area/* tag (repeatable)")
     pst.add_argument("--program", help='set program: "[[name]]" home link (repoints if present)')
     pst.add_argument("--raised-at", dest="raised_at", help='set raised-at: "[[forum]]" provenance link')
