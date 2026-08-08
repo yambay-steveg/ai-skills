@@ -104,9 +104,29 @@ folder first — `--add-path` only warns if it doesn't exist, leaving a folder t
 or hash can't break Obsidian's frontmatter parse. Omitting the flag leaves an existing summary
 untouched; passing `--summary ""` clears it deliberately.
 
-There is deliberately **no `--latest` writer yet**: whether `latest` is a human glance line or an
-AI handoff note is an open convention question, and automating the wrong answer is worse than the
-current hand-edit. `latest` and the `## Sessions` log remain the two sanctioned hand-edits.
+### `latest` is a human line — the AI's next step goes in the task folder
+
+Settled 5 Aug 2026, written down 8 Aug. **`latest` is Steve's glance line**: where the work stands,
+in his words, for reading at a glance on the board. It is the card's most-read text — rendered on
+the card face in both views, in the fly-out, and printed by the SessionStart hook.
+
+**An AI's "what to do next" does not go there.** It goes in the card's activity folder, in
+**`HANDOFF.md`** — the de facto convention already (five task folders use it; `NEXT.md` none). Deep
+state, sequencing, blockers and open questions live there too, which is what the folder is *for*:
+
+| Where | What | Audience |
+| --- | --- | --- |
+| `latest` (card) | where this stands, one line | Steve, glancing at the board |
+| `HANDOFF.md` (activity folder) | next actions, blockers, sequencing | the next session |
+| `## Sessions` (card) | what each session did, one line each | both, as durable history |
+
+There is deliberately **no second card field** (`next:` or similar). A card is the wrong altitude
+for a next-action queue, and the board face has no room to render one.
+
+`--latest` therefore writes the *human* line. An AI updating it should write what Steve would write
+("waiting on X", "shipped Y, Z still open") — not an instruction to itself. Getting this wrong is
+what the convention exists to prevent: for months `latest` filled up with handoff prose, so the one
+line meant for a human at a glance was written for a machine.
 
 ## `list` — the board's read interface
 

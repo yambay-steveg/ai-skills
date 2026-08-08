@@ -2514,7 +2514,7 @@ def test_launch_delay_default_matches_docs(cc):
 
 # ── set: the metadata writer ────────────────────────────────────────────────────
 def _set_ns(card, **kw):
-    base = dict(card=card, summary=None, area=None, add_area=None, program=None,
+    base = dict(card=card, summary=None, latest=None, area=None, add_area=None, program=None,
                 raised_at=None, add_tag=None, remove_tag=None,
                 add_path=None, remove_path=None, customer=None)
     base.update(kw)
@@ -2588,6 +2588,72 @@ def test_cmd_set_summary_is_quoted_so_prose_stays_valid_yaml(cc, tmp_path, monke
     cc.cmd_set(_set_ns(str(card), summary=summary))
     fm_block = card.read_text().split("---\n")[1]
     assert yaml.safe_load(fm_block)["summary"] == summary
+
+
+def test_cmd_set_latest_writes_the_glance_line(cc, tmp_path, monkeypatch):
+    """The last hand-edit exception in a single-writer system (A3.1). Unblocked once the
+    convention was settled: `latest` is Steve's line, the AI's next step lives in the
+    activity folder's HANDOFF.md."""
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "c")
+    card.write_text(card.read_text().replace("status: in-progress",
+                                             'status: in-progress\nlatest: ""'))
+    cc.cmd_set(_set_ns(str(card), latest="Waiting on the SCE review"))
+    fm, _ = cc.read_card(str(card))
+    assert cc.unquote(fm["latest"]) == "Waiting on the SCE review"
+
+
+def test_cmd_set_latest_inserts_when_field_absent(cc, tmp_path, monkeypatch):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "c")                      # make_card writes no latest line
+    cc.cmd_set(_set_ns(str(card), latest="Added later"))
+    fm, _ = cc.read_card(str(card))
+    assert cc.unquote(fm["latest"]) == "Added later"
+
+
+@pytest.mark.parametrize("latest", [
+    "Shipped #64: no more duplicate sessions",   # colon + hash, the cmd_new bug class
+    "Waiting on Kim's 'go ahead'",
+    "",                                          # explicit clear
+])
+def test_cmd_set_latest_is_quoted_so_prose_stays_valid_yaml(cc, tmp_path, monkeypatch, latest):
+    yaml = pytest.importorskip("yaml")
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "c")
+    cc.cmd_set(_set_ns(str(card), latest=latest))
+    fm_block = card.read_text().split("---\n")[1]
+    assert yaml.safe_load(fm_block)["latest"] == latest
+
+
+def test_cmd_set_latest_and_summary_are_independent(cc, tmp_path, monkeypatch):
+    """Two different jobs on one card: what this *is* vs where it *stands*."""
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "c")
+    cc.cmd_set(_set_ns(str(card), summary="What this is"))
+    cc.cmd_set(_set_ns(str(card), latest="Where it stands"))
+    fm, _ = cc.read_card(str(card))
+    assert cc.unquote(fm["summary"]) == "What this is"
+    assert cc.unquote(fm["latest"]) == "Where it stands"
+
+    cc.cmd_set(_set_ns(str(card), latest="Moved on"))          # updating one leaves the other
+    fm, _ = cc.read_card(str(card))
+    assert cc.unquote(fm["summary"]) == "What this is"
+    assert cc.unquote(fm["latest"]) == "Moved on"
+
+
+def test_cmd_set_without_latest_leaves_it_alone(cc, tmp_path, monkeypatch):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "c")
+    card.write_text(card.read_text().replace("status: in-progress",
+                                             'status: in-progress\nlatest: "keep me"'))
+    cc.cmd_set(_set_ns(str(card), area="tools"))
+    fm, _ = cc.read_card(str(card))
+    assert cc.unquote(fm["latest"]) == "keep me"
 
 
 def test_cmd_set_without_summary_leaves_it_alone(cc, tmp_path, monkeypatch):
