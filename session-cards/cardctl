@@ -2198,6 +2198,14 @@ def cmd_set(args):
         text = set_fm_field(text, "summary", yq(args.summary))
         changes.append(("summary", args.summary))
 
+    # `latest` is Steve's glance line — where the work stands, in his words — NOT the next
+    # session's instructions. Those go in the activity folder's HANDOFF.md. The convention
+    # predates this writer (settled 5 Aug); the writer exists so sessions stop hand-editing
+    # frontmatter to maintain it, not to hand them a place to leave notes for themselves.
+    if args.latest is not None:
+        text = set_fm_field(text, "latest", yq(args.latest))
+        changes.append(("latest", args.latest))
+
     if args.program is not None:
         text = set_fm_field(text, "program", f'"[[{unwrap_wikilink(args.program)}]]"')
         changes.append(("program", unwrap_wikilink(args.program)))
@@ -2492,6 +2500,9 @@ def main():
     pst.add_argument("card")
     pst.add_argument("--summary", help="set the card's one-line 'what this is' summary "
                                        "(shown on the board; quoted, so prose is safe)")
+    pst.add_argument("--latest", help="set the card's 'where this stands' glance line — written "
+                                      "for Steve, NOT next-session instructions (those go in the "
+                                      "activity folder's HANDOFF.md)")
     pst.add_argument("--area", help="set the area/* facet (replaces any existing area/* tag)")
     pst.add_argument("--add-area", action="append", help="add an additional area/* tag (repeatable)")
     pst.add_argument("--program", help='set program: "[[name]]" home link (repoints if present)')
