@@ -14,6 +14,7 @@ below) — no hand-copying.
 cardctl launch <card.md>          # open the card's folders + resume its session (pin → latest → new)
 cardctl launch <card.md> --new    # start a FRESH session (ignore pin / latest)
 cardctl launch <card.md> --pick   # choose from the card's recent sessions (terminal only)
+cardctl launch <card.md> --resume # force a tab for the pinned session (restore didn't)
 cardctl link   <card.md> --current   # pin the running session + log it under ## Sessions
 cardctl link   <card.md> --session ID # pin a specific session id (e.g. one that ran elsewhere)
 cardctl unpin  <card.md>          # clear the sessionId pin (## Sessions history kept); inverse of link
@@ -342,18 +343,30 @@ pure pointer card over `--path` folders; with no `--path` its `paths` is empty a
    carries `claudeCode.allowDangerouslySkipPermissions:true` — bypass is **armed** (available in
    each tab's mode selector) but never forced; every session dials its own mode (window-scoped
    only; regenerated each launch — never touches your real folders).
-4. Waits for the card's window: polls Hammerspoon (up to `--delay`s, default 3) until the
-   workspace window is open **and frontmost** — raising it by window id if it opens without
-   focus — then:
-   - **resume** → fires `vscode://anthropic.claude-code/open?session=<id>`.
-   - **new** → fires `vscode://anthropic.claude-code/open` (fresh conversation); prints a reminder
-     to `cardctl link` if you want to pin it.
+4. **Usually stops there — VS Code restores the card window's Claude tabs itself.**
 
-   The URI has no window-targeting parameter (it lands in whichever window has focus), so if the
-   card's window never becomes frontmost within the budget, `launch` exits **without firing the
-   URI** — retry, raise `--delay`, or pass `--no-poll` for the old fixed-delay-then-fire
-   behaviour. When Hammerspoon is unavailable it falls back to that fixed delay automatically,
-   with a note.
+   Verified 8 Aug 2026: quit VS Code with one session open, reopen the workspace by hand, and the
+   conversation comes back. `launch` used to fire the resume URI *anyway*, which opened a **second
+   tab of the same session** — a duplicate on every single launch. (July's finding F5, "tabs
+   accumulate", was this bug seen from the outside and treated as tidying.)
+
+   So the session URI now fires **only when there is nothing to restore**:
+   - **`--new`** → `vscode://anthropic.claude-code/open` (fresh conversation); prints a reminder
+     to `cardctl link` if you want to pin it.
+   - **`--resume`** → `…/open?session=<id>`, for when restore brought nothing back (you closed the
+     tabs, or workspace state was cleared).
+   - **first launch of this card's workspace** → same resume URI, since VS Code holds no state for
+     it yet. Tracked by a `<card>.launched` marker beside the generated workspace in
+     `~/.cache/session-cards/`, rather than by reading VS Code's own storage — that is
+     undocumented, versioned, and would break silently on an update.
+
+   **Window polling now runs only on those paths.** The URI has no window-targeting parameter, so
+   it lands in whichever window has focus; `launch` therefore polls Hammerspoon (up to `--delay`s,
+   default 3) until the card's window is open **and frontmost**, raising it by window id if
+   needed, and exits without firing if it never gets there. A plain relaunch fires nothing, so it
+   skips the poll entirely — which removes the wrong-window race from the common path instead of
+   merely mitigating it. `--no-poll` keeps the old fixed-delay-then-fire behaviour; an unavailable
+   Hammerspoon falls back to it automatically, with a note.
 
 ### Launching from Obsidian (R14: the board owns launching)
 

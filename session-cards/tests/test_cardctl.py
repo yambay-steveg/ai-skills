@@ -2336,7 +2336,8 @@ def test_launch_refuses_archived_card_before_any_subprocess(cc, tmp_path, monkey
 
 # ── launch (window polling before the resume URI, #23) ──────────────────────────
 def _launch_ns(card, **kw):
-    base = dict(card=str(card), new=False, pick=False, delay=0.0, no_poll=False)
+    base = dict(card=str(card), new=False, pick=False, delay=0.0, no_poll=False,
+                resume=False)
     base.update(kw)
     return NS(**base)
 
@@ -2344,10 +2345,19 @@ def _launch_ns(card, **kw):
 def _launch_rig(cc, tmp_path, monkeypatch):
     """A pinned card + mocked build_workspace/subprocess/sleep for cmd_launch
     sequencing tests. Returns (card_path, calls) where calls records every
-    subprocess argv (code / open / osascript)."""
+    subprocess argv (code / open / osascript).
+
+    CACHE is redirected at a temp dir: it holds the `.launched` marker that decides
+    whether VS Code has state to restore, so a real one would make these tests depend on
+    (and pollute) the developer's own launch history. Each rig therefore starts as a
+    never-launched workspace — the case where firing the URI is correct.
+    """
     cards = tmp_path / "Cards"
     folder = tmp_path / "proj"
     folder.mkdir()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setattr(cc, "CACHE", cache)
     card = make_card(cards, "my-card", paths=[str(folder)], session="sid-123",
                      title="My Card")
     calls = []
@@ -2417,6 +2427,80 @@ def test_launch_no_poll_skips_hammerspoon(cc, tmp_path, monkeypatch):
     monkeypatch.setattr(cc, "hs_code_windows", boom)
     cc.cmd_launch(_launch_ns(card, no_poll=True))
     assert any(a[0] == cc.OPEN for a in calls)
+
+
+def _open_calls(cc, calls):
+    return [a for a in calls if a[0] == cc.OPEN]
+
+
+def test_launch_does_not_fire_uri_on_a_relaunch(cc, tmp_path, monkeypatch):
+    """THE duplicate bug (8 Aug). VS Code restores the card window's Claude tabs itself;
+    firing the resume URI on top opened a second tab of the same session. Verified live:
+    quit with one session open, reopen by hand → one session; launch from the board →
+    two. Second and later launches must open the window and stop there."""
+    card, calls = _launch_rig(cc, tmp_path, monkeypatch)
+    monkeypatch.setattr(cc, "hs_code_windows", lambda: [
+        {"id": 1, "title": "My Card — my-card (Workspace)", "focused": True}])
+
+    cc.cmd_launch(_launch_ns(card))            # first launch: nothing to restore
+    assert _open_calls(cc, calls) == [[cc.OPEN, cc.URI.format(sid="sid-123")]]
+
+    calls.clear()
+    cc.cmd_launch(_launch_ns(card))            # relaunch: VS Code restores it
+    assert _open_calls(cc, calls) == []        # no URI → no duplicate
+    assert any(a[0] == cc.CODE for a in calls)  # but the window still opens
+
+
+def test_launch_marks_the_workspace_as_launched(cc, tmp_path, monkeypatch):
+    card, _ = _launch_rig(cc, tmp_path, monkeypatch)
+    monkeypatch.setattr(cc, "hs_code_windows", lambda: [
+        {"id": 1, "title": "My Card — my-card (Workspace)", "focused": True}])
+    ws = tmp_path / "ws.code-workspace"
+    assert not cc.workspace_launched_before(ws)
+    cc.cmd_launch(_launch_ns(card))
+    assert cc.workspace_launched_before(ws)
+
+
+def test_launch_resume_forces_the_uri_after_a_relaunch(cc, tmp_path, monkeypatch):
+    """The escape hatch for when restore brought nothing back (tabs closed, state cleared).
+    It must work in-editor — the previous answer was a terminal `claude --resume`, which is
+    the friction this whole change exists to remove."""
+    card, calls = _launch_rig(cc, tmp_path, monkeypatch)
+    monkeypatch.setattr(cc, "hs_code_windows", lambda: [
+        {"id": 1, "title": "My Card — my-card (Workspace)", "focused": True}])
+    cc.cmd_launch(_launch_ns(card))
+    calls.clear()
+
+    cc.cmd_launch(_launch_ns(card, resume=True))
+    assert _open_calls(cc, calls) == [[cc.OPEN, cc.URI.format(sid="sid-123")]]
+
+
+def test_launch_new_still_fires_even_on_a_relaunch(cc, tmp_path, monkeypatch):
+    """`--new` has nothing to restore by definition, so it is unaffected by the change."""
+    card, calls = _launch_rig(cc, tmp_path, monkeypatch)
+    monkeypatch.setattr(cc, "hs_code_windows", lambda: [
+        {"id": 1, "title": "My Card — my-card (Workspace)", "focused": True}])
+    cc.cmd_launch(_launch_ns(card))
+    calls.clear()
+
+    cc.cmd_launch(_launch_ns(card, new=True))
+    assert _open_calls(cc, calls) == [[cc.OPEN, cc.URI_NEW]]
+
+
+def test_relaunch_skips_the_window_poll_entirely(cc, tmp_path, monkeypatch):
+    """Polling for the frontmost window existed only to make the URI land in the right
+    place. With no URI to fire there is nothing to protect, so a relaunch must not consult
+    Hammerspoon at all — which also removes the wrong-window race (A1.2) from the common
+    path, not just mitigate it."""
+    card, calls = _launch_rig(cc, tmp_path, monkeypatch)
+    monkeypatch.setattr(cc, "hs_code_windows", lambda: [
+        {"id": 1, "title": "My Card — my-card (Workspace)", "focused": True}])
+    cc.cmd_launch(_launch_ns(card))
+
+    def boom():
+        raise AssertionError("hs must not be consulted when no URI will be fired")
+    monkeypatch.setattr(cc, "hs_code_windows", boom)
+    cc.cmd_launch(_launch_ns(card))            # no exception → never polled
 
 
 def test_launch_delay_default_matches_docs(cc):

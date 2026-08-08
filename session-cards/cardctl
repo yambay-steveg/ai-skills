@@ -415,23 +415,28 @@ def _fixed_delay_focus(delay):
     time.sleep(0.4)         # let the activation settle so the URI lands on it
 
 
-def cmd_launch(args):
-    fm, _ = read_card(args.card)
-    if str(fm.get("status") or "").strip().lower() == "archived":
-        die(f"{args.card}: card is archived — run `cardctl reinstate {args.card}` first")
-    ensure_primary_folder(fm)  # GUI-created card with no folder yet → create it, then launch
-    sid, mode = resolve_session(fm, args)
-    ws, folders = build_workspace(args.card, fm, sid)
+def workspace_launched_before(ws):
+    """Has cardctl opened this generated workspace before?
 
-    print(f"opening {len(folders)} folder(s):")
-    for p in folders:
-        print(f"  - {p}")
-    subprocess.run([CODE, str(ws)], check=True)
+    The signal for "VS Code has per-workspace UI state to restore". It's tracked with a
+    marker beside the generated `.code-workspace` rather than read out of VS Code's own
+    storage, which is undocumented, versioned, and would break silently on an update.
+    """
+    return (CACHE / f"{ws.stem}.launched").exists()
 
-    # The resume URI lands in whichever window is focused (no window-targeting param),
-    # so confirm the card's own window is frontmost before firing it. --no-poll and
-    # hs-unavailable fall back to the old fixed-delay hope.
-    slug = Path(args.card).stem
+
+def mark_workspace_launched(ws):
+    (CACHE / f"{ws.stem}.launched").touch()
+
+
+def _fire_resume_uri(slug, sid, args):
+    """Fire the resume URI, after confirming the card's own window is frontmost.
+
+    The URI has no window-targeting parameter, so it lands wherever focus is. That's why
+    this polls — and why it now runs only on the paths that *deliberately* want a session
+    tab (`--resume`, or a first launch with nothing to restore), rather than on every
+    launch as it used to.
+    """
     if args.no_poll:
         _fixed_delay_focus(args.delay)
     else:
@@ -445,14 +450,49 @@ def cmd_launch(args):
             print(f"  (Hammerspoon unavailable: {e} — falling back to a fixed "
                   f"{args.delay:g}s delay; the URI may land in the wrong window)")
             _fixed_delay_focus(args.delay)
+    subprocess.run([OPEN, URI.format(sid=sid) if sid else URI_NEW], check=True)
 
-    if sid:
-        print(f"resuming session {sid}  ({mode})")
-        subprocess.run([OPEN, URI.format(sid=sid)], check=True)
+
+def cmd_launch(args):
+    fm, _ = read_card(args.card)
+    if str(fm.get("status") or "").strip().lower() == "archived":
+        die(f"{args.card}: card is archived — run `cardctl reinstate {args.card}` first")
+    ensure_primary_folder(fm)  # GUI-created card with no folder yet → create it, then launch
+    sid, mode = resolve_session(fm, args)
+    ws, folders = build_workspace(args.card, fm, sid)
+
+    print(f"opening {len(folders)} folder(s):")
+    for p in folders:
+        print(f"  - {p}")
+    first_launch = not workspace_launched_before(ws)
+    subprocess.run([CODE, str(ws)], check=True)
+    mark_workspace_launched(ws)
+
+    slug = Path(args.card).stem
+
+    # Resuming is VS Code's job, not ours. It restores the card window's Claude tabs from
+    # per-workspace UI state (verified 8 Aug: quit with one session open, reopen, the
+    # conversation comes back). Firing the resume URI on top of that opened a SECOND tab of
+    # the same session — a duplicate on every launch — and the URI's lack of window
+    # targeting is the whole reason `launch` had to poll for the frontmost window at all.
+    #
+    # So the URI now fires only when there is genuinely nothing to restore:
+    #   - a fresh session was asked for (`--new`), or
+    #   - `--resume` explicitly wants a tab back (restore didn't, or tabs were closed), or
+    #   - this workspace has never been launched, so VS Code holds no state for it.
+    wants_new = sid is None
+    if wants_new or args.resume or first_launch:
+        if wants_new:
+            print(f"starting a new session  ({mode})")
+        else:
+            why = "--resume" if args.resume else "first launch of this workspace"
+            print(f"resuming session {sid}  ({mode}; {why})")
+        _fire_resume_uri(slug, sid, args)
+        if wants_new:
+            print(f"  → pin it later if you want with:  cardctl link {args.card}")
     else:
-        print(f"starting a new session  ({mode})")
-        subprocess.run([OPEN, URI_NEW], check=True)
-        print(f"  → pin it later if you want with:  cardctl link {args.card}")
+        print("opened the card's window; VS Code restores its session(s)")
+        print("  → no Claude tab came back? re-run with --resume (or the board's Resume button)")
 
 
 _UUID_PAT = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
@@ -2388,6 +2428,10 @@ def main():
     pl.add_argument("card")
     pl.add_argument("--new", action="store_true",
                     help="start a fresh session (ignore pin / latest)")
+    pl.add_argument("--resume", action="store_true",
+                    help="force a tab for the pinned session. Not needed normally — VS Code "
+                         "restores the card window's Claude tabs itself; use this when it "
+                         "didn't (tabs were closed, or workspace state was cleared)")
     pl.add_argument("--pick", action="store_true",
                     help="choose from the card's recent sessions (terminal only)")
     pl.add_argument("--delay", type=float, default=3.0,
