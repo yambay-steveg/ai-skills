@@ -587,6 +587,30 @@ def test_cmd_deploy_is_actually_guarded_before_writing(cc, tmp_path, monkeypatch
     assert "refusing to deploy" in capsys.readouterr().err
 
 
+def test_every_deploy_surface_source_exists(cc):
+    """A surface whose fragment has been deleted breaks `deploy` at run time, in both
+    live vaults. Caught here instead: retiring the meta-bind buttons removed a fragment,
+    and the surface list had to lose its entry in the same change."""
+    missing = [(label, src) for label, _dest, _kind, src in cc.DEPLOY_SURFACES
+               if not (cc.DEPLOY_SRC / src).exists()]
+    assert missing == []
+
+
+def test_deploy_surfaces_no_longer_include_meta_bind(cc):
+    """R14: launching is the board's job, so the in-note button surface is gone, not
+    deployed empty — deploy never deletes, so an empty fragment would leave the buttons
+    in place forever."""
+    labels = [label for label, *_ in cc.DEPLOY_SURFACES]
+    assert not any("meta-bind" in label for label in labels), labels
+
+
+def test_shell_commands_fragment_keeps_only_the_palette_launch(cc):
+    """The one deliberately-kept entry: a keyboard route into a card if the board is down."""
+    frag = json.loads((cc.DEPLOY_SRC / "fragments/shellcommands.commands.json").read_text())
+    assert [c["id"] for c in frag] == ["mnosc79dtm"]
+    assert "-d" not in frag[0]["platform_specific_commands"]["default"]
+
+
 def test_deploy_copy_surface_creates_then_idempotent(cc, tmp_path, monkeypatch):
     # point DEPLOY_SRC at the real canonical sources
     src = Path(cc.__file__).resolve().parent / "deploy"
@@ -2077,6 +2101,17 @@ def test_new_title_with_colon_is_valid_yaml_for_obsidian(cc, tmp_path, monkeypat
     cc.cmd_new(_new_ns("wp-yaml", title=title))
     fm_block = (cards / "wp-yaml.md").read_text().split("---\n")[1]
     assert yaml.safe_load(fm_block)["title"] == title
+
+
+def test_new_writes_no_button_bar(cc, tmp_path, monkeypatch):
+    """R14: a card body is a record, not a control surface — launching is the board's job.
+    Without this, every new card would re-seed the retired Meta Bind buttons and the
+    ~69-card sweep would undo itself one card at a time."""
+    cards, _ = _wire_new(cc, tmp_path, monkeypatch)
+    cc.cmd_new(_new_ns("no-buttons", title="No Buttons"))
+    body = (cards / "no-buttons.md").read_text().split("---\n", 2)[2]
+    assert "BUTTON[" not in body
+    assert not hasattr(cc, "BUTTON_BAR")     # the constant is gone, not just unused
 
 
 def test_new_path_entries_appended_after_activity_and_not_created(cc, tmp_path, monkeypatch):
