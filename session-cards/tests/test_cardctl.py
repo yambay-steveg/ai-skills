@@ -2239,7 +2239,7 @@ def _new_ns(slug, **kw):
     """NS for cmd_new with every field defaulted (mirrors the argparser)."""
     base = dict(slug=slug, title="A title", summary=None, latest=None, path=None,
                 session=None, jira=None, area=None, program=None,
-                status="in-progress", type="project", domain="work",
+                status="in-progress", type="project", domain="work", strict=False,
                 make_folder=False, no_folder=False, force=False)
     base.update(kw)
     return NS(**base)
@@ -2292,6 +2292,73 @@ def test_new_title_with_colon_is_valid_yaml_for_obsidian(cc, tmp_path, monkeypat
     cc.cmd_new(_new_ns("wp-yaml", title=title))
     fm_block = (cards / "wp-yaml.md").read_text().split("---\n")[1]
     assert yaml.safe_load(fm_block)["title"] == title
+
+
+def _seed_area(cards_dir, slug, area):
+    """An existing card carrying `area/<area>` — the only evidence an area is real."""
+    cards_dir.mkdir(parents=True, exist_ok=True)
+    (cards_dir / f"{slug}.md").write_text(
+        f"---\ntype: project\ntitle: T\nstatus: in-progress\ntags: [area/{area}]\npaths:\n  - \n---\n")
+
+
+def test_new_warns_when_the_area_is_used_by_no_existing_card(cc, tmp_path, monkeypatch, capsys):
+    """A4.4: `area/tool` for `area/tools` is well-formed, passes every check, and silently
+    mints a rival facet only `lint` notices later. The board's picker closes this for the
+    create form; CLI-made cards had nothing."""
+    cards, _ = _wire_new(cc, tmp_path, monkeypatch)
+    _seed_area(cards, "existing", "tools")
+    cc.cmd_new(_new_ns("typo-card", area="tool"))
+    err = capsys.readouterr().err
+    assert "not used by any existing card" in err
+    assert "Did you mean: tools?" in err              # the near-miss is the whole point
+    fm, _ = cc.read_card(str(cards / "typo-card.md"))
+    assert "area/tool" in fm["tags"]                  # advisory: it still creates it
+
+
+def test_new_is_quiet_when_the_area_already_exists(cc, tmp_path, monkeypatch, capsys):
+    cards, _ = _wire_new(cc, tmp_path, monkeypatch)
+    _seed_area(cards, "existing", "tools")
+    cc.cmd_new(_new_ns("good-card", area="tools"))
+    assert "not used by any existing card" not in capsys.readouterr().err
+
+
+def test_new_strict_refuses_an_unknown_area(cc, tmp_path, monkeypatch, capsys):
+    cards, _ = _wire_new(cc, tmp_path, monkeypatch)
+    _seed_area(cards, "existing", "tools")
+    with pytest.raises(SystemExit):
+        cc.cmd_new(_new_ns("typo-card", area="tool", strict=True))
+    assert "refusing to create a new area facet" in capsys.readouterr().err
+    assert not (cards / "typo-card.md").exists()
+
+
+def test_new_warns_but_still_allows_a_genuinely_first_card_in_an_area(cc, tmp_path, monkeypatch):
+    """Advisory by default on purpose: the first card in a new area must not be blocked by a
+    check whose only evidence is 'nobody has used this yet'."""
+    cards, _ = _wire_new(cc, tmp_path, monkeypatch)
+    cc.cmd_new(_new_ns("pioneer", area="brand-new"))
+    fm, _ = cc.read_card(str(cards / "pioneer.md"))
+    assert "area/brand-new" in fm["tags"]
+
+
+def test_known_areas_spans_both_domains(cc, tmp_path, monkeypatch):
+    """Areas are one taxonomy across work and personal — a work card shouldn't be told
+    `area/home` is unknown."""
+    work = tmp_path / "work" / "Cards"
+    personal = tmp_path / "personal" / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"work": work, "personal": personal})
+    _seed_area(work, "w", "tools")
+    _seed_area(personal, "p", "home")
+    assert cc.known_areas() == ["home", "tools"]
+
+
+def test_cmd_set_area_warns_on_an_unknown_facet_too(cc, tmp_path, monkeypatch, capsys):
+    """`set --area` mints a facet just as readily as `new` does."""
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    _seed_area(cards, "existing", "tools")
+    card = make_card(cards, "c")
+    cc.cmd_set(_set_ns(str(card), area="tool"))
+    assert "not used by any existing card" in capsys.readouterr().err
 
 
 def test_new_writes_no_button_bar(cc, tmp_path, monkeypatch):
@@ -2637,6 +2704,7 @@ def test_launch_delay_default_matches_docs(cc):
 # ── set: the metadata writer ────────────────────────────────────────────────────
 def _set_ns(card, **kw):
     base = dict(card=card, summary=None, latest=None, area=None, add_area=None, program=None,
+                strict=False,
                 raised_at=None, add_tag=None, remove_tag=None,
                 add_path=None, remove_path=None, customer=None)
     base.update(kw)

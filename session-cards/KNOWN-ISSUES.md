@@ -16,9 +16,16 @@ when the window last closed), so the count grows: the hardening card's window op
 but VS Code's per-workspace UI state is separate and not something cardctl controls, so stale
 tabs can't be pruned from outside.
 
-**Practice:** after a launch, close unwanted Claude tabs before doing anything that depends on
-"which session is newest" (this mattered for `link --current` until slice 10 scoped the lookup
-to the card's own paths), and tidy tabs before closing a card window so fewer come back next time.
+**RESOLVED 8 Aug 2026 (#64) — and this entry had the diagnosis backwards.** The dominant cause
+wasn't VS Code hoarding tabs; it was `cardctl launch` firing the resume URI *on top of* VS Code's
+own restore, so every launch opened a second tab of the same session. Steve's experiment isolated
+it: quit with one session open, reopen the workspace by hand → one session; launch the same card
+from the board → two. `launch` now fires the URI only when there is nothing to restore (`--new`,
+`--resume`, or a workspace it has never opened), so a relaunch reproduces what you left.
+
+What remains isn't a bug: VS Code restores the tabs *you* left open — tidy them before closing a
+card window if you don't want them back. The "close stray tabs after every launch" habit this
+entry recommended is no longer needed, and it masked the real defect for five weeks.
 
 ## A normal relaunch doesn't disarm a running window
 
@@ -60,9 +67,14 @@ by window id if it opens without focus, and only then fires the URI. On timeout 
 without firing (retry / raise `--delay` / `--no-poll` for the old behaviour); when
 Hammerspoon is unavailable it falls back to the old fixed-delay-then-fire, with a note.
 
-**Residual gap:** the URI itself still has no window-targeting parameter, so this is
-best-effort narrowing, not a full solve — focus can still change in the instant between the
-frontmost check and URI delivery, and the `--no-poll` / hs-unavailable paths keep the
+**RESOLVED 8 Aug 2026 (#64) by removing the URI from the common path** rather than making the
+race safer. A plain relaunch now fires no URI at all, so there is nothing to mis-target, and it
+skips the frontmost-polling entirely. The polling survives only where a URI is still deliberately
+fired (`--new`, `--resume`, first launch of a workspace) — which is where it was always justified.
+
+**Formerly — residual gap:** the URI itself still has no window-targeting parameter, so the
+polling was best-effort narrowing, not a full solve — focus could change in the instant between
+the frontmost check and URI delivery, and the `--no-poll` / hs-unavailable paths kept the
 original race. Per F4 in the concurrent-session operating model, the priority of a full
 solve has dropped: in the one-window-per-card model you mostly open tabs in an existing
 window rather than racing a fresh one.
