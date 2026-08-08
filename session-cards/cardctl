@@ -826,6 +826,64 @@ def _live_folder_refs(exclude_card):
     return refs
 
 
+def set_session_note(text, sid, note):
+    """Rewrite one `## Sessions` entry's trailing "— what it did", preserving its date.
+
+    Surgical on purpose: the history is hand-readable markdown that also carries
+    hand-written lines cardctl doesn't parse, so this rewrites the single matching line and
+    leaves every other byte alone. Returns (new_text, found).
+    """
+    out, found = [], False
+    for ln in text.splitlines(keepends=True):
+        m = SESSION_ENTRY_RE.match(ln.strip())
+        if not found and m and m.group("id") == sid:
+            rest = (m.group("rest") or "").strip()
+            # Keep the date that `link` wrote; only the note after it is ours to replace.
+            date = rest.split(" — ", 1)[0].split(": ", 1)[0].strip() if rest else ""
+            body = f"- `{sid}`"
+            if date:
+                body += f" — {date}"
+            if note:
+                body += f" — {note}"
+            out.append(body + "\n")
+            found = True
+            continue
+        out.append(ln)
+    return "".join(out), found
+
+
+def cmd_note(args):
+    """Write the "— what it did" note on a card's `## Sessions` entry.
+
+    The last field a session had to hand-edit. `link` writes the id and date; the note —
+    what that stint actually accomplished — was left to a human or an AI editing the card
+    body directly, which is the one thing the single-writer rule exists to prevent.
+
+    Defaults to the card's pinned session, since "note what I just did" is the whole use
+    case. `--session` targets an older entry (e.g. filling in the stint you just displaced).
+    An empty note clears it, leaving the id and date.
+    """
+    if not Path(args.card).is_file():
+        die(f"{args.card}: no such card")
+    if not card_under_cards_dirs(args.card):
+        die(f"{args.card}: not inside a configured Cards/ folder")
+
+    fm, text = read_card(args.card)
+    sid = (args.session or "").strip() or str(fm.get("sessionId") or "").strip()
+    if not sid:
+        die(f"{args.card}: no pinned session — pass --session <id>, or pin one with "
+            f"`cardctl link {args.card} --current`")
+
+    new_text, found = set_session_note(text, sid, args.note.strip())
+    if not found:
+        die(f"{args.card}: no `## Sessions` entry for {sid} — run "
+            f"`cardctl link {args.card} --session {sid}` first to log it")
+
+    Path(args.card).write_text(new_text)
+    action = "noted" if args.note.strip() else "cleared the note on"
+    print(f"{Path(args.card).name}: {action} {sid}")
+
+
 def cmd_set_status(args):
     """Set a card's lifecycle `status` — the one board-owned field cardctl writes on
     demand (R10: surfaces never edit the card file directly; they go through here).
@@ -2464,6 +2522,13 @@ def main():
     pu = sub.add_parser("unpin", help="clear the card's sessionId pin (## Sessions history kept)")
     pu.add_argument("card")
     pu.set_defaults(func=cmd_unpin)
+
+    pnote = sub.add_parser("note", help="write the '— what it did' note on a card's "
+                                        "## Sessions entry (defaults to the pinned session)")
+    pnote.add_argument("card")
+    pnote.add_argument("note", help="what that session did; pass \"\" to clear it")
+    pnote.add_argument("--session", help="target an older entry instead of the pinned one")
+    pnote.set_defaults(func=cmd_note)
 
     pn = sub.add_parser("new", help="scaffold a card in the Domain vault's Cards/ folder")
     pn.add_argument("slug", help="card filename (kebab-case, no extension)")

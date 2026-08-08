@@ -442,6 +442,128 @@ def test_link_refuses_missing_card(cc, tmp_path, monkeypatch, capsys):
     assert "no such card" in capsys.readouterr().err
 
 
+# ── note (the "— what it did" writer; A3.2) ─────────────────────────────────────
+def _note_ns(card, note, session=None):
+    return NS(card=str(card), note=note, session=session)
+
+
+def _card_with_history(cards, sid, date="05 Aug 2026", note=""):
+    tail = f" — {note}" if note else ""
+    return make_card(cards, "hist", session=sid), f"- `{sid}` — {date}{tail}\n"
+
+
+def test_note_writes_the_what_it_did_on_the_pinned_entry(cc, tmp_path, monkeypatch, capsys):
+    """The last hand-edit in the system: `link` writes the id and date, and the note was
+    left to whoever was editing the card body directly."""
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    sid = "11111111-2222-3333-4444-555555555555"
+    card, entry = _card_with_history(cards, sid)
+    card.write_text(card.read_text() + entry)
+
+    cc.cmd_note(_note_ns(card, "shipped the note writer"))
+    body = card.read_text().split("## Sessions", 1)[1]
+    assert f"- `{sid}` — 05 Aug 2026 — shipped the note writer" in body
+    assert "noted" in capsys.readouterr().out
+
+
+def test_note_preserves_the_date_link_wrote(cc, tmp_path, monkeypatch):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    sid = "11111111-2222-3333-4444-555555555555"
+    card, entry = _card_with_history(cards, sid, date="02 Jul 2026")
+    card.write_text(card.read_text() + entry)
+    cc.cmd_note(_note_ns(card, "a note"))
+    assert "02 Jul 2026" in card.read_text()
+
+
+def test_note_replaces_an_existing_note_rather_than_appending(cc, tmp_path, monkeypatch):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    sid = "11111111-2222-3333-4444-555555555555"
+    card, entry = _card_with_history(cards, sid, note="first take")
+    card.write_text(card.read_text() + entry)
+    cc.cmd_note(_note_ns(card, "second take"))
+    body = card.read_text()
+    assert "second take" in body and "first take" not in body
+
+
+def test_note_empty_clears_it_but_keeps_id_and_date(cc, tmp_path, monkeypatch):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    sid = "11111111-2222-3333-4444-555555555555"
+    card, entry = _card_with_history(cards, sid, note="remove me")
+    card.write_text(card.read_text() + entry)
+    cc.cmd_note(_note_ns(card, ""))
+    assert f"- `{sid}` — 05 Aug 2026\n" in card.read_text()
+    assert "remove me" not in card.read_text()
+
+
+def test_note_targets_an_older_entry_with_session(cc, tmp_path, monkeypatch):
+    """Filling in the stint you just displaced — the case the convention actually asks for."""
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    pinned = "11111111-2222-3333-4444-555555555555"
+    older = "99999999-8888-7777-6666-555555555555"
+    card = make_card(cards, "hist", session=pinned)
+    card.write_text(card.read_text() + f"- `{pinned}` — 08 Aug 2026\n"
+                                       f"- `{older}` — 02 Jul 2026\n")
+    cc.cmd_note(_note_ns(card, "did the earlier half", session=older))
+    body = card.read_text()
+    assert f"- `{older}` — 02 Jul 2026 — did the earlier half" in body
+    assert f"- `{pinned}` — 08 Aug 2026\n" in body          # untouched
+
+
+def test_note_leaves_other_lines_byte_identical(cc, tmp_path, monkeypatch):
+    """The history is hand-readable markdown that also holds lines cardctl can't parse."""
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    sid = "11111111-2222-3333-4444-555555555555"
+    card = make_card(cards, "hist", session=sid)
+    card.write_text(card.read_text() + f"- `{sid}` — 05 Aug 2026\n"
+                                       "- a hand-written line cardctl doesn't parse\n"
+                                       "  continued prose under it\n")
+    before = card.read_text().splitlines()
+    cc.cmd_note(_note_ns(card, "x"))
+    after = card.read_text().splitlines()
+    assert len(before) == len(after)
+    assert after[-2:] == before[-2:]                        # the unparsed lines survive
+
+
+def test_note_dies_when_the_session_has_no_entry(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "hist", session="11111111-2222-3333-4444-555555555555")
+    with pytest.raises(SystemExit):
+        cc.cmd_note(_note_ns(card, "nothing to attach to"))
+    assert "no `## Sessions` entry" in capsys.readouterr().err
+
+
+def test_note_dies_when_nothing_is_pinned(cc, tmp_path, monkeypatch, capsys):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "hist")                          # no sessionId
+    with pytest.raises(SystemExit):
+        cc.cmd_note(_note_ns(card, "text"))
+    assert "no pinned session" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bad,msg", [
+    ("outside", "not inside a configured Cards/ folder"),
+    ("missing", "no such card"),
+])
+def test_note_guards_match_the_other_writers(cc, tmp_path, monkeypatch, capsys, bad, msg):
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": tmp_path / "Cards"})
+    if bad == "outside":
+        target = tmp_path / "loose.md"
+        target.write_text("---\ntitle: T\n---\n")
+    else:
+        target = tmp_path / "Cards" / "ghost.md"
+    with pytest.raises(SystemExit):
+        cc.cmd_note(_note_ns(target, "text"))
+    assert msg in capsys.readouterr().err
+
+
 # ── unpin (clear the pin, keep the history) ─────────────────────────────────────
 def test_unpin_clears_session_id_and_keeps_history(cc, tmp_path, monkeypatch, capsys):
     cards = tmp_path / "Cards"
