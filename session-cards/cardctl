@@ -517,13 +517,25 @@ def session_date(sid):
     return ""
 
 
+def card_session_origins(fm, cwd=None):
+    """The folders to look for a card's sessions in: `--cwd` if given, else every one of
+    the card's `paths` that exists on disk.
+
+    Shared by both of `link`'s search paths so they cannot drift apart — they scope
+    identically and differ only in which transcript they pick and what they print.
+    """
+    if cwd:
+        return [expand(cwd)] if Path(expand(cwd)).is_dir() else []
+    return [expand(p) for p in (fm.get("paths") or []) if Path(expand(p)).is_dir()]
+
+
 def cmd_link(args):
     """Pin a session as the card's `sessionId` AND log it under the card's `## Sessions`
     history (newest first; an AI fills in 'what it did'). Re-pin freely — the previous pin
     stays logged. Pick the session: `--session <id>` | `--current` (newest transcript
     across ALL the card's paths — never other projects, #30; `--cwd` narrows to one
-    folder) | newest transcript under the card's primary folder (`--cwd` to point
-    elsewhere)."""
+    folder) | newest transcript under ANY of the card's paths (`--cwd` to narrow to one
+    folder)."""
     if not Path(args.card).is_file():
         die(f"{args.card}: no such card")
     if not card_under_cards_dirs(args.card):
@@ -536,9 +548,7 @@ def cmd_link(args):
         # "Current" must be scoped to the card's own folders: the newest transcript
         # *globally* can belong to another card's live window, silently pinning (and
         # logging under ## Sessions) an unrelated session (#30).
-        origins = ([expand(args.cwd)] if args.cwd else
-                   [expand(p) for p in (fm.get("paths") or [])
-                    if Path(expand(p)).is_dir()])
+        origins = card_session_origins(fm, args.cwd)
         if not origins:
             die(f"{args.card}: no folder to scope --current to — "
                 f"pass --session <id> or --cwd")
@@ -549,17 +559,20 @@ def cmd_link(args):
         sid = max(tx, key=lambda p: p.stat().st_mtime).stem
         print(f"current session: {sid}")
     else:
-        origin = args.cwd or next((expand(p) for p in (fm.get("paths") or [])
-                                   if Path(expand(p)).is_dir()), None)
-        if not origin:
+        # Search ALL the card's folders, not just the first: a card commonly works across
+        # several paths (an activity folder plus a linked repo or worktree), and its
+        # sessions often ran in the linked one. Taking only `paths[0]` made the CLI default
+        # die with "no sessions found under <folder>" for exactly those cards, while the
+        # session it wanted sat one path along. Same scoping as `--current` above.
+        origins = card_session_origins(fm, args.cwd)
+        if not origins:
             die(f"{args.card}: no folder to search — pass --session <id> or --cwd")
-        proj = PROJECTS / encode_cwd(origin)
-        sess = sorted(proj.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if not sess:
-            die(f"no sessions found under {origin} (looked in {proj}); "
+        tx = [t for o in origins for t in (PROJECTS / encode_cwd(o)).glob("*.jsonl")]
+        if not tx:
+            die(f"no sessions found under {', '.join(origins)}; "
                 f"pass --session <id> for a session that ran elsewhere")
-        sid = sess[0].stem
-        print(f"newest session under {origin}: {sid}")
+        sid = max(tx, key=lambda p: p.stat().st_mtime).stem
+        print(f"newest session under the card's paths: {sid}")
 
     old = fm.get("sessionId")
     old = old.strip() if isinstance(old, str) and old.strip() else None

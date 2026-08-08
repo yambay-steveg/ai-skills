@@ -299,11 +299,12 @@ Turn an in-flight piece of work (already has sessions, maybe across repos) into 
      --session <session_id> --jira PRODEV-32988 --area area/v7 --program "Work Ops"
    ```
    (Pure pointer card with no activity folder of its own? Add `--no-folder`.)
-3. **Open** the card in Obsidian (Reading view) → **▶ Launch session**.
+3. **Launch it from the board** (open-or-focus).
 
 Notes: pin the *active* session with `--session`; reach other sessions under the primary folder
-via `cardctl launch <card> --pick`. Sessions under a *non-primary* path are only reachable by
-pinning (a known limitation).
+via `cardctl launch <card> --pick`. `link` (both `--current` and its default search) covers **all**
+the card's paths, so a session that ran in a linked repo or worktree is pinnable; `--pick` is still
+primary-folder-only.
 
 ## New activity from scratch
 
@@ -376,7 +377,9 @@ body** (the session history). Pick the session by:
 - `--current` — the running session (the newest transcript across all projects).
 - `--session <id>` — an exact id (needed for sessions that ran *outside* the card's folder, e.g.
   rooted at a repo top).
-- *(default)* the newest transcript under the card's folder (`--cwd` to point elsewhere).
+- *(default)* the newest transcript under **any** of the card's paths (`--cwd` to narrow to one).
+  A card's sessions often run in a linked repo rather than its activity folder, so searching only
+  `paths[0]` failed with "no sessions found" while the session sat one path along.
 
 **Session history convention:** the card's **`## Sessions`** section is the readable log —
 newest first, one bullet per session: `` - `<id>` — <date> — <what it did> ``. `cardctl link`

@@ -305,6 +305,55 @@ def test_link_current_picks_newest_across_all_card_paths(cc, tmp_path, monkeypat
     assert f"sessionId: {newer}" in card.read_text()
 
 
+def test_link_default_search_finds_a_session_in_a_non_primary_path(cc, tmp_path, monkeypatch):
+    """The CLI default used to look only at `paths[0]`, so a card whose sessions all ran in
+    a linked repo/worktree died with "no sessions found under <folder>" while the session
+    sat one path along. It now scopes exactly like `--current`."""
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(cc, "PROJECTS", projects)
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    primary = tmp_path / "active" / "x"          # no transcripts here at all
+    worktree = tmp_path / "worktrees" / "x-slice"
+    primary.mkdir(parents=True)
+    worktree.mkdir(parents=True)
+    card = make_card(cards, "x-card", paths=[str(primary), str(worktree)])
+    sid = fake_transcript(projects, str(worktree))
+
+    cc.cmd_link(NS(card=str(card), session=None, current=False, cwd=None, force=False))
+    assert f"sessionId: {sid}" in card.read_text()
+
+
+def test_link_default_search_picks_newest_across_paths(cc, tmp_path, monkeypatch):
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(cc, "PROJECTS", projects)
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    primary = tmp_path / "active" / "x"
+    worktree = tmp_path / "worktrees" / "x-slice"
+    primary.mkdir(parents=True)
+    worktree.mkdir(parents=True)
+    card = make_card(cards, "x-card", paths=[str(primary), str(worktree)])
+    older = fake_transcript(projects, str(primary))
+    newer = fake_transcript(projects, str(worktree))
+    _set_mtime(projects, str(primary), older, 1_000)
+    _set_mtime(projects, str(worktree), newer, 2_000)
+
+    cc.cmd_link(NS(card=str(card), session=None, current=False, cwd=None, force=False))
+    assert f"sessionId: {newer}" in card.read_text()
+
+
+def test_card_session_origins_shared_by_both_link_paths(cc, tmp_path):
+    """The helper both branches use — `--cwd` wins, missing folders are dropped."""
+    real = tmp_path / "real"
+    real.mkdir()
+    fm = {"paths": [str(real), str(tmp_path / "gone")]}
+    assert cc.card_session_origins(fm) == [str(real)]
+    assert cc.card_session_origins(fm, str(real)) == [str(real)]
+    assert cc.card_session_origins(fm, str(tmp_path / "gone")) == []
+    assert cc.card_session_origins({}) == []
+
+
 def test_link_current_with_cwd_scopes_to_that_cwd(cc, tmp_path, monkeypatch):
     projects = tmp_path / "projects"
     monkeypatch.setattr(cc, "PROJECTS", projects)
