@@ -18,6 +18,7 @@ cardctl launch <card.md> --resume # force a tab for the pinned session (restore 
 cardctl link   <card.md> --current   # pin the running session + log it under ## Sessions
 cardctl link   <card.md> --session ID # pin a specific session id (e.g. one that ran elsewhere)
 cardctl unpin  <card.md>          # clear the sessionId pin (## Sessions history kept); inverse of link
+cardctl note   <card.md> "what it did"  # write the note on the pinned session's ## Sessions entry
 cardctl new    <slug> --title …   # scaffold a card in the Domain vault's Cards/ folder
 cardctl set-status <card.md> <s>  # set lifecycle status (single writer of the field; surfaces delegate here)
 cardctl set <card.md> [--area … --program … --raised-at … --customer … --add-tag … --remove-tag … --add-path …]  # write metadata (the /card-model apply-on-confirm writer)
@@ -416,8 +417,18 @@ body** (the session history). Pick the session by:
 
 **Session history convention:** the card's **`## Sessions`** section is the readable log —
 newest first, one bullet per session: `` - `<id>` — <date> — <what it did> ``. `cardctl link`
-writes the `` `id` — date `` (and the displaced previous pin if not already logged); a session/AI
-fills in the **"— what it did"** note. The frontmatter `sessionId` marks the *current* pin;
+writes the `` `id` — date `` (and the displaced previous pin if not already logged); **`cardctl
+note` writes the "— what it did"**:
+
+```bash
+cardctl note <card.md> "swept the vaults and retired the buttons"   # the pinned session
+cardctl note <card.md> "did the earlier half" --session <id>        # an older entry
+cardctl note <card.md> ""                                           # clear it
+```
+
+It rewrites that one line and leaves every other byte alone — the history is hand-readable
+markdown that also carries lines cardctl doesn't parse. With this, **nothing on a card needs a
+hand-edit**: `## Sessions` was the last exception to the single-writer rule. The frontmatter `sessionId` marks the *current* pin;
 `## Sessions` is the durable history. Re-pinning is non-destructive — the old pin stays logged.
 (`--force` is accepted but no longer needed.)
 
