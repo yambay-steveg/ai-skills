@@ -343,6 +343,26 @@ def test_link_default_search_picks_newest_across_paths(cc, tmp_path, monkeypatch
     assert f"sessionId: {newer}" in card.read_text()
 
 
+def test_link_default_search_dies_when_no_path_has_a_session(cc, tmp_path, monkeypatch, capsys):
+    """The error path of the default search: folders exist but hold no transcripts. Salvaged
+    from `cardctl-customer-edge` before deleting it — the `--current` equivalent was already
+    covered, this one wasn't, and the message must name every folder looked in, not just the
+    first, or it sends you hunting in the wrong place."""
+    monkeypatch.setattr(cc, "PROJECTS", tmp_path / "projects")
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    primary = tmp_path / "active" / "x"
+    worktree = tmp_path / "worktrees" / "x-slice"
+    primary.mkdir(parents=True)
+    worktree.mkdir(parents=True)
+    card = make_card(cards, "x-card", paths=[str(primary), str(worktree)])  # no transcripts
+
+    with pytest.raises(SystemExit):
+        cc.cmd_link(NS(card=str(card), session=None, current=False, cwd=None, force=False))
+    err = capsys.readouterr().err
+    assert str(primary) in err and str(worktree) in err
+
+
 def test_card_session_origins_shared_by_both_link_paths(cc, tmp_path):
     """The helper both branches use — `--cwd` wins, missing folders are dropped."""
     real = tmp_path / "real"
