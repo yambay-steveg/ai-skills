@@ -318,11 +318,25 @@ def build_workspace(card_path, fm, sid):
     # theme untouched — opting out is free.
     tint = colour_hex(fm.get("colour"))
     if tint:
+        fg = readable_on(tint)
         settings["workbench.colorCustomizations"] = {
             "statusBar.background": tint,
-            "statusBar.foreground": readable_on(tint),
+            "statusBar.foreground": fg,
             # The border stops the band bleeding into the editor on dark themes.
             "statusBar.border": tint,
+            # Title bar too. Inert under macOS's default NATIVE title bar — the keys are
+            # simply ignored — so shipping them costs nothing and they light up if Steve
+            # ever sets `"window.titleBarStyle": "custom"` in User settings. That's an
+            # application-scoped setting a workspace file can't touch, so it stays his call.
+            #
+            # INACTIVE matters more than active here: in App Exposé and Mission Control
+            # every window is unfocused, which is exactly when you're hunting for one. VS
+            # Code dims inactive title bars by default, washing the tint out precisely when
+            # it's needed — so inactive is set to full strength, not a muted variant.
+            "titleBar.activeBackground": tint,
+            "titleBar.activeForeground": fg,
+            "titleBar.inactiveBackground": tint,
+            "titleBar.inactiveForeground": fg,
         }
 
     CACHE.mkdir(parents=True, exist_ok=True)

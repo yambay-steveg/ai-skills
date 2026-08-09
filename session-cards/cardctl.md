@@ -153,11 +153,22 @@ Tokens rather than hex on the card so the palette can be retuned centrally witho
 card, and so `colour: teal` stays readable in the file and in `list --json` (which lets the board
 show the same colour later, if that's ever wanted).
 
-**Not the title bar.** `titleBar.*` is ignored under macOS's native title bar, and
-`window.titleBarStyle` is **APPLICATION-scoped** — a workspace file cannot change it (verified in
-VS Code's own bundle: the setting registers with `scope: 1`). Tinting the title bar would need
-`"window.titleBarStyle": "custom"` in User settings, globally, which changes how every VS Code
-window looks. Left as an opt-in you can take later.
+**The title bar is tinted too — but only if you opt in.** `titleBar.*` keys are written on every
+launch and are simply **ignored** under macOS's default *native* title bar, so they cost nothing.
+They light up the moment you set:
+
+```jsonc
+// VS Code User settings — one line, reversible, needs a restart
+"window.titleBarStyle": "custom"
+```
+
+That setting is **APPLICATION-scoped** — a workspace file cannot set it (verified in VS Code's own
+bundle: it registers with `scope: 1`), so it stays a deliberate global choice: VS Code then draws
+the bar instead of macOS.
+
+**Inactive is set to full strength, not dimmed.** In App Exposé and Mission Control every window is
+unfocused, which is exactly when you're hunting for one; VS Code's default dimming would wash the
+tint out precisely where it has to work.
 
 Archived cards release their colour: their windows aren't open, and a 14-token palette across ~69
 cards would otherwise exhaust immediately.

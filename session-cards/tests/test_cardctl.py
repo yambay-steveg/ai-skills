@@ -2419,10 +2419,26 @@ def test_build_workspace_tints_the_status_bar_only(cc, tmp_path, monkeypatch):
     cc_block = settings["workbench.colorCustomizations"]
     assert cc_block["statusBar.background"] == cc.CARD_COLOURS["teal"]
     assert cc_block["statusBar.foreground"] == "#ffffff"
-    # Status bar ONLY: tinting the activity bar as well was tried on four real windows and
-    # was too loud to work as a hint. And titleBar.* can't work under a native title bar.
+    # Not the activity bar: tinting it too was tried on four real windows and was too loud
+    # to work as a hint.
     assert not any(k.startswith("activityBar.") for k in cc_block)
-    assert not any(k.startswith("titleBar.") for k in cc_block)
+
+
+def test_build_workspace_tints_the_title_bar_for_when_its_enabled(cc, tmp_path, monkeypatch):
+    """Inert under macOS's default native title bar (the keys are ignored), so they cost
+    nothing to ship and light up if Steve sets `window.titleBarStyle: custom` — an
+    application-scoped setting a workspace file can't set, so it stays his call."""
+    monkeypatch.setattr(cc, "CACHE", tmp_path / "cache")
+    folder = tmp_path / "proj"; folder.mkdir()
+    ws, _ = cc.build_workspace(str(tmp_path / "c.md"),
+                               {"title": "C", "paths": [str(folder)], "colour": "teal"}, None)
+    block = json.loads(ws.read_text())["settings"]["workbench.colorCustomizations"]
+    assert block["titleBar.activeBackground"] == cc.CARD_COLOURS["teal"]
+    # INACTIVE at full strength, not dimmed: in App Exposé every window is unfocused, which
+    # is exactly when you are hunting for one. A muted inactive tint would wash out the cue
+    # precisely where it has to work.
+    assert block["titleBar.inactiveBackground"] == block["titleBar.activeBackground"]
+    assert block["titleBar.inactiveForeground"] == block["titleBar.activeForeground"] == "#ffffff"
 
 
 def test_build_workspace_writes_no_colour_key_when_opted_out(cc, tmp_path, monkeypatch):
