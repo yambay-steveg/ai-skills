@@ -81,6 +81,7 @@ is a create/edit, so a filesystem write is correct here.
 
 ```bash
 cardctl set <card.md> --summary "one-line what this is"  # the board's standing summary line
+cardctl set <card.md> --colour violet                # window tint (token | #rrggbb | auto | none)
 cardctl set <card.md> --area area/v7                 # replace the area/* facet (warns if unused elsewhere)
 cardctl new <slug> --area v7 --strict                # refuse an area no existing card uses
 cardctl set <card.md> --program managing-ai-activities  # set/repoint program: "[[…]]" home link
@@ -131,6 +132,33 @@ for a next-action queue, and the board face has no room to render one.
 ("waiting on X", "shipped Y, Z still open") — not an instruction to itself. Getting this wrong is
 what the convention exists to prevent: for months `latest` filled up with handoff prose, so the one
 line meant for a human at a glance was written for a machine.
+
+### `--colour` — which VS Code window is which
+
+Each card carries a **window colour**, tinting its VS Code window's **activity bar and status bar**
+so several open cards are told apart at a glance. Assigned at `cardctl new` from a 14-token palette,
+**collision-aware** (never the same as a live card's), and stable for the life of the card. Cards
+that predate tinting earn one on their first launch and keep it.
+
+```bash
+cardctl set <card.md> --colour violet     # a palette token
+cardctl set <card.md> --colour "#4b2e83"  # or raw hex (foreground computed for contrast)
+cardctl set <card.md> --colour auto       # reassign from the palette
+cardctl set <card.md> --colour none       # opt out — no colorCustomizations written at all
+```
+
+Tokens rather than hex on the card so the palette can be retuned centrally without rewriting every
+card, and so `colour: teal` stays readable in the file and in `list --json` (which lets the board
+show the same colour later, if that's ever wanted).
+
+**Not the title bar.** `titleBar.*` is ignored under macOS's native title bar, and
+`window.titleBarStyle` is **APPLICATION-scoped** — a workspace file cannot change it (verified in
+VS Code's own bundle: the setting registers with `scope: 1`). Tinting the title bar would need
+`"window.titleBarStyle": "custom"` in User settings, globally, which changes how every VS Code
+window looks. Left as an opt-in you can take later.
+
+Archived cards release their colour: their windows aren't open, and a 14-token palette across ~69
+cards would otherwise exhaust immediately.
 
 ## `list` — the board's read interface
 

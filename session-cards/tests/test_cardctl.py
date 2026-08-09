@@ -2239,7 +2239,7 @@ def _new_ns(slug, **kw):
     """NS for cmd_new with every field defaulted (mirrors the argparser)."""
     base = dict(slug=slug, title="A title", summary=None, latest=None, path=None,
                 session=None, jira=None, area=None, program=None,
-                status="in-progress", type="project", domain="work", strict=False,
+                status="in-progress", type="project", domain="work", strict=False, colour=None,
                 make_folder=False, no_folder=False, force=False)
     base.update(kw)
     return NS(**base)
@@ -2359,6 +2359,134 @@ def test_cmd_set_area_warns_on_an_unknown_facet_too(cc, tmp_path, monkeypatch, c
     card = make_card(cards, "c")
     cc.cmd_set(_set_ns(str(card), area="tool"))
     assert "not used by any existing card" in capsys.readouterr().err
+
+
+# ── card colour / window tint ───────────────────────────────────────────────────
+def test_colour_hex_accepts_tokens_hex_and_opt_out(cc):
+    assert cc.colour_hex("teal") == cc.CARD_COLOURS["teal"]
+    assert cc.colour_hex("#4b2e83") == "#4b2e83"
+    assert cc.colour_hex("none") is None
+    assert cc.colour_hex("") is None
+    # A typo must not be fatal — a bad colour can't be allowed to stop a card launching.
+    assert cc.colour_hex("tael") is None
+
+
+def test_readable_on_picks_a_legible_foreground(cc):
+    assert cc.readable_on("#0f7c86") == "#ffffff"      # every palette colour is dark
+    assert cc.readable_on("#ffe08a") == "#000000"      # the hex escape hatch can be light
+    for hexv in cc.CARD_COLOURS.values():
+        assert cc.readable_on(hexv) == "#ffffff"
+
+
+def test_build_workspace_tints_activity_and_status_bar(cc, tmp_path, monkeypatch):
+    """Not the title bar: macOS's native title bar ignores `titleBar.*`, and
+    `window.titleBarStyle` is APPLICATION-scoped so a workspace file cannot change it."""
+    monkeypatch.setattr(cc, "CACHE", tmp_path / "cache")
+    folder = tmp_path / "proj"; folder.mkdir()
+    ws, _ = cc.build_workspace(str(tmp_path / "c.md"),
+                               {"title": "C", "paths": [str(folder)], "colour": "teal"}, None)
+    settings = json.loads(ws.read_text())["settings"]
+    cc_block = settings["workbench.colorCustomizations"]
+    assert cc_block["activityBar.background"] == cc.CARD_COLOURS["teal"]
+    assert cc_block["statusBar.background"] == cc.CARD_COLOURS["teal"]
+    assert cc_block["statusBar.foreground"] == "#ffffff"
+    assert not any(k.startswith("titleBar.") for k in cc_block)
+
+
+def test_build_workspace_writes_no_colour_key_when_opted_out(cc, tmp_path, monkeypatch):
+    """Opting out must leave the theme completely untouched, not set it to a default."""
+    monkeypatch.setattr(cc, "CACHE", tmp_path / "cache")
+    folder = tmp_path / "proj"; folder.mkdir()
+    for value in ("none", "", None):
+        ws, _ = cc.build_workspace(str(tmp_path / "c.md"),
+                                   {"title": "C", "paths": [str(folder)], "colour": value}, None)
+        assert "workbench.colorCustomizations" not in json.loads(ws.read_text())["settings"]
+
+
+def test_new_assigns_a_colour_and_avoids_ones_in_use(cc, tmp_path, monkeypatch):
+    """Two cards you're likely to have open together must never share a tint."""
+    cards, _ = _wire_new(cc, tmp_path, monkeypatch)
+    cc.cmd_new(_new_ns("first"))
+    cc.cmd_new(_new_ns("second"))
+    a = cc.read_card(str(cards / "first.md"))[0]["colour"]
+    b = cc.read_card(str(cards / "second.md"))[0]["colour"]
+    assert a in cc.CARD_COLOURS and b in cc.CARD_COLOURS
+    assert a != b
+
+
+def test_archived_cards_free_their_colour_for_reuse(cc, tmp_path, monkeypatch):
+    """Their windows aren't open, so holding a colour hostage would exhaust a 14-slot
+    palette across a 69-card store."""
+    cards = tmp_path / "Cards"
+    cards.mkdir(parents=True)
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    (cards / "old.md").write_text(
+        "---\ntype: project\ntitle: T\nstatus: archived\ncolour: teal\npaths:\n  - \n---\n")
+    (cards / "live.md").write_text(
+        "---\ntype: project\ntitle: T\nstatus: in-progress\ncolour: rose\npaths:\n  - \n---\n")
+
+    used = cc.colours_in_use()
+    assert "rose" in used            # the live card holds its colour
+    assert "teal" not in used        # the archived one does not
+    assert cc.pick_colour() != "rose"
+
+
+def test_new_colour_none_opts_out(cc, tmp_path, monkeypatch):
+    cards, _ = _wire_new(cc, tmp_path, monkeypatch)
+    cc.cmd_new(_new_ns("plain", colour="none"))
+    assert cc.read_card(str(cards / "plain.md"))[0]["colour"] == "none"
+
+
+def test_new_rejects_a_bad_colour(cc, tmp_path, monkeypatch, capsys):
+    cards, _ = _wire_new(cc, tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        cc.cmd_new(_new_ns("bad", colour="chartreuse"))
+    assert "invalid --colour" in capsys.readouterr().err
+    assert not (cards / "bad.md").exists()
+
+
+def test_set_colour_changes_and_persists(cc, tmp_path, monkeypatch):
+    """'With an option to change and persist the colour' — the explicit ask."""
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "c")
+    cc.cmd_set(_set_ns(str(card), colour="violet"))
+    assert cc.read_card(str(card))[0]["colour"] == "violet"
+    cc.cmd_set(_set_ns(str(card), colour="#4b2e83"))
+    assert cc.read_card(str(card))[0]["colour"] == "#4b2e83"
+
+
+def test_set_colour_auto_reassigns_from_the_palette(cc, tmp_path, monkeypatch):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "c")
+    cc.cmd_set(_set_ns(str(card), colour="auto"))
+    assert cc.read_card(str(card))[0]["colour"] in cc.CARD_COLOURS
+
+
+def test_ensure_card_colour_assigns_once_then_is_stable(cc, tmp_path, monkeypatch, capsys):
+    """Pre-tint cards earn one on first launch — and keep it. 'Constant for the life of
+    the card' is the requirement, so a second call must not reassign."""
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "old")
+    fm, _ = cc.read_card(str(card))
+    first = cc.ensure_card_colour(str(card), fm)
+    assert first in cc.CARD_COLOURS
+    assert "assigned window colour" in capsys.readouterr().out
+
+    fm2, _ = cc.read_card(str(card))
+    assert cc.ensure_card_colour(str(card), fm2) == first
+
+
+def test_ensure_card_colour_respects_an_opt_out(cc, tmp_path, monkeypatch):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "plain")
+    card.write_text(card.read_text().replace("status: in-progress",
+                                             "status: in-progress\ncolour: none"))
+    fm, _ = cc.read_card(str(card))
+    assert cc.ensure_card_colour(str(card), fm) == "none"
 
 
 def test_new_writes_no_button_bar(cc, tmp_path, monkeypatch):
@@ -2703,8 +2831,8 @@ def test_launch_delay_default_matches_docs(cc):
 
 # ── set: the metadata writer ────────────────────────────────────────────────────
 def _set_ns(card, **kw):
-    base = dict(card=card, summary=None, latest=None, area=None, add_area=None, program=None,
-                strict=False,
+    base = dict(card=card, summary=None, latest=None, colour=None, area=None, add_area=None,
+                program=None, strict=False,
                 raised_at=None, add_tag=None, remove_tag=None,
                 add_path=None, remove_path=None, customer=None)
     base.update(kw)

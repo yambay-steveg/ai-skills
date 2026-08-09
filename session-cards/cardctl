@@ -44,6 +44,7 @@ macOS only for now. `code` and `open` are resolved by absolute path (works under
 like Obsidian Shell Commands, which run with a minimal PATH).
 """
 import argparse
+import collections
 import ctypes
 import datetime
 import glob
@@ -102,6 +103,23 @@ CARD_STATUSES = ["backlog", "in-progress", "on-hold", "done", "archived"]
 # Card `type` vocabulary (schema comment above): project | program, plus the
 # optional bug | idea | decision kinds already in use on existing cards.
 CARD_TYPES = ["project", "program", "bug", "idea", "decision"]
+
+# ── card colour: which VS Code window is which ──────────────────────────────────
+# One stable colour per card, tinting its window's activity + status bars so several
+# open cards are told apart at a glance (Steve, 5 Aug: "hard to distinguish sessions as
+# they all look the same"). Deliberately NOT the board's status colours — two colour
+# systems that looked alike would read as meaning the same thing.
+#
+# Tokens rather than raw hex on the card: the hue can be retuned centrally later without
+# rewriting every card, and `colour: teal` stays readable in the file and in list --json.
+# All are dark enough to carry white text, so contrast needs no per-card thought.
+CARD_COLOURS = {
+    "teal": "#0f7c86", "cyan": "#0b6fa4", "indigo": "#3b4fa8", "violet": "#6b46c1",
+    "magenta": "#a3378f", "rose": "#b0355e", "red": "#b03535", "orange": "#b3591f",
+    "amber": "#8a6a12", "olive": "#5f6d24", "green": "#2f7a3f", "emerald": "#17756a",
+    "slate": "#4a5568", "brown": "#6b4a35",
+}
+HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 def die(msg):
@@ -282,6 +300,20 @@ def build_workspace(card_path, fm, sid):
     # machines without it.
     settings["claudeCode.allowDangerouslySkipPermissions"] = True
 
+    # Tint this window so several open cards are told apart at a glance. Activity bar and
+    # status bar only: `titleBar.*` is ignored under macOS's native title bar, and
+    # `window.titleBarStyle` is APPLICATION-scoped so a workspace file can't change it.
+    # A card with no colour (or `colour: none`) writes no key at all, leaving VS Code's
+    # theme untouched — opting out is free.
+    tint = colour_hex(fm.get("colour"))
+    if tint:
+        settings["workbench.colorCustomizations"] = {
+            "activityBar.background": tint,
+            "activityBar.foreground": readable_on(tint),
+            "statusBar.background": tint,
+            "statusBar.foreground": readable_on(tint),
+        }
+
     CACHE.mkdir(parents=True, exist_ok=True)
     ws = CACHE / f"{Path(card_path).stem}.code-workspace"
     ws.write_text(json.dumps(
@@ -458,6 +490,7 @@ def cmd_launch(args):
     if str(fm.get("status") or "").strip().lower() == "archived":
         die(f"{args.card}: card is archived — run `cardctl reinstate {args.card}` first")
     ensure_primary_folder(fm)  # GUI-created card with no folder yet → create it, then launch
+    ensure_card_colour(args.card, fm)   # pre-tint cards earn one on first launch
     sid, mode = resolve_session(fm, args)
     ws, folders = build_workspace(args.card, fm, sid)
 
@@ -803,6 +836,84 @@ def _step_desc(e):
     return f"step failed: {e}"
 
 
+def colour_hex(value):
+    """A card's `colour:` value → its hex, or None when unset/opted out.
+
+    Accepts a palette token (`teal`) or a raw `#rrggbb` escape hatch. Anything else is
+    treated as unset rather than fatal: a typo'd colour must not stop a card launching.
+    """
+    v = str(value or "").strip().lower()
+    if not v or v == "none":
+        return None
+    if v in CARD_COLOURS:
+        return CARD_COLOURS[v]
+    return v if HEX_RE.match(v) else None
+
+
+def readable_on(hex_colour):
+    """Black or white, whichever stays legible on `hex_colour`.
+
+    The palette is dark enough that this is always white, but the raw-hex escape hatch
+    means a light colour can arrive; relative luminance (WCAG) decides rather than hope.
+    """
+    r, g, b = (int(hex_colour[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    chan = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in (r, g, b)]
+    luminance = 0.2126 * chan[0] + 0.7152 * chan[1] + 0.0722 * chan[2]
+    return "#000000" if luminance > 0.45 else "#ffffff"
+
+
+def colours_in_use(exclude_card=None):
+    """Palette tokens currently used by live (non-archived) cards, as a Counter.
+
+    Archived cards are ignored: their windows aren't open, so their colours are free to
+    reuse — the whole point is telling apart the windows you have open *now*.
+    """
+    used = collections.Counter()
+    for c in _all_card_files():
+        if exclude_card and expand(str(c)) == expand(str(exclude_card)):
+            continue
+        try:
+            fm, _ = read_card(c)
+        except SystemExit:
+            continue
+        if str(fm.get("status") or "").strip().lower() == "archived":
+            continue
+        tok = str(fm.get("colour") or "").strip().lower()
+        if tok in CARD_COLOURS:
+            used[tok] += 1
+    return used
+
+
+def pick_colour(exclude_card=None):
+    """A palette token for a new card — collision-aware.
+
+    Prefers one no live card is using, so two cards open side by side never share a tint.
+    Past ~14 live cards the palette is exhausted, so it falls back to the least-used
+    (rather than refusing or repeating arbitrarily).
+    """
+    used = colours_in_use(exclude_card)
+    free = [t for t in CARD_COLOURS if t not in used]
+    return free[0] if free else min(CARD_COLOURS, key=lambda t: used[t])
+
+
+def ensure_card_colour(card_path, fm):
+    """Give a card a colour on first launch if it hasn't got one, and persist it.
+
+    Cards created before tinting existed (and any made by hand) have no `colour:`. Rather
+    than a migration, they earn one the first time they're launched — a single write, at a
+    moment the card is already being handled. `colour: none` opts out and is respected.
+    """
+    raw = str(fm.get("colour") or "").strip()
+    if raw:
+        return raw
+    token = pick_colour(card_path)
+    text = Path(card_path).read_text()
+    Path(card_path).write_text(set_fm_field(text, "colour", token))
+    fm["colour"] = token
+    print(f"  assigned window colour: {token}")
+    return token
+
+
 def known_areas():
     """Every `area/<slug>` already in use across the card store, as a sorted list.
 
@@ -1016,10 +1127,17 @@ def cmd_new(args):
             print(f"cardctl: warning — path does not exist yet: {p}", file=sys.stderr)
 
     # Human glance fields (shown on the board) first; plumbing (cardctl) last.
+    # Every card gets a window colour at birth (collision-aware), so the tint is stable for
+    # its whole life. `--colour none` opts out; an explicit token/hex pins a chosen one.
+    colour = (args.colour or "").strip().lower() or pick_colour()
+    if colour != "none" and colour not in CARD_COLOURS and not HEX_RE.match(colour):
+        die(f"invalid --colour {args.colour!r} — a palette token "
+            f"({', '.join(CARD_COLOURS)}), a #rrggbb hex, or 'none'")
+
     fm = [f"type: {args.type}", f"title: {yq(args.title)}", f"status: {args.status}",
           f"summary: {yq(args.summary)}",
           f"latest: {yq(args.latest)}",
-          f"tags: [{', '.join(tags)}]"]
+          f"tags: [{', '.join(tags)}]", f"colour: {colour}"]
     if args.program:
         fm.append(f'program: "[[{args.program}]]"')
     if args.session:
@@ -2311,6 +2429,16 @@ def cmd_set(args):
     # session's instructions. Those go in the activity folder's HANDOFF.md. The convention
     # predates this writer (settled 5 Aug); the writer exists so sessions stop hand-editing
     # frontmatter to maintain it, not to hand them a place to leave notes for themselves.
+    if args.colour is not None:
+        want = args.colour.strip().lower()
+        if want == "auto":
+            want = pick_colour(args.card)
+        if want != "none" and want not in CARD_COLOURS and not HEX_RE.match(want):
+            die(f"invalid --colour {args.colour!r} — a palette token "
+                f"({', '.join(CARD_COLOURS)}), a #rrggbb hex, 'auto', or 'none'")
+        text = set_fm_field(text, "colour", want)
+        changes.append(("colour", want))
+
     if args.latest is not None:
         text = set_fm_field(text, "latest", yq(args.latest))
         changes.append(("latest", args.latest))
@@ -2592,6 +2720,8 @@ def main():
     pn.add_argument("--session", help="pin this session id (e.g. from `session-search`)")
     pn.add_argument("--jira", help="Jira key → jira/<KEY> tag")
     pn.add_argument("--area", help="area/* facet tag, e.g. area/v7")
+    pn.add_argument("--colour", help="window tint: a palette token, #rrggbb, or 'none' "
+                                     "(default: an unused palette colour)")
     pn.add_argument("--strict", action="store_true",
                     help="refuse an area no existing card uses (default: warn and create it)")
     pn.add_argument("--program", help="program name → program: \"[[name]]\" link")
@@ -2618,6 +2748,8 @@ def main():
     pst.add_argument("card")
     pst.add_argument("--summary", help="set the card's one-line 'what this is' summary "
                                        "(shown on the board; quoted, so prose is safe)")
+    pst.add_argument("--colour", help="window tint: a palette token, #rrggbb, 'auto' to "
+                                      "reassign, or 'none' to opt out")
     pst.add_argument("--latest", help="set the card's 'where this stands' glance line — written "
                                       "for Steve, NOT next-session instructions (those go in the "
                                       "activity folder's HANDOFF.md)")
