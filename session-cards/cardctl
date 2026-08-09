@@ -300,18 +300,23 @@ def build_workspace(card_path, fm, sid):
     # machines without it.
     settings["claudeCode.allowDangerouslySkipPermissions"] = True
 
-    # Tint this window so several open cards are told apart at a glance. Activity bar and
-    # status bar only: `titleBar.*` is ignored under macOS's native title bar, and
+    # Tint this window so several open cards are told apart at a glance. **Status bar only**
+    # — tried with the activity bar too (9 Aug, four windows side by side) and it was too
+    # loud: when every window shouts, none of them stands out. One coloured band per window
+    # reads as a hint, which is what was asked for.
+    #
+    # Not the title bar: `titleBar.*` is ignored under macOS's native title bar, and
     # `window.titleBarStyle` is APPLICATION-scoped so a workspace file can't change it.
+    #
     # A card with no colour (or `colour: none`) writes no key at all, leaving VS Code's
     # theme untouched — opting out is free.
     tint = colour_hex(fm.get("colour"))
     if tint:
         settings["workbench.colorCustomizations"] = {
-            "activityBar.background": tint,
-            "activityBar.foreground": readable_on(tint),
             "statusBar.background": tint,
             "statusBar.foreground": readable_on(tint),
+            # The border stops the band bleeding into the editor on dark themes.
+            "statusBar.border": tint,
         }
 
     CACHE.mkdir(parents=True, exist_ok=True)

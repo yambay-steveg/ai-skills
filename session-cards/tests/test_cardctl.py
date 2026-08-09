@@ -2378,7 +2378,7 @@ def test_readable_on_picks_a_legible_foreground(cc):
         assert cc.readable_on(hexv) == "#ffffff"
 
 
-def test_build_workspace_tints_activity_and_status_bar(cc, tmp_path, monkeypatch):
+def test_build_workspace_tints_the_status_bar_only(cc, tmp_path, monkeypatch):
     """Not the title bar: macOS's native title bar ignores `titleBar.*`, and
     `window.titleBarStyle` is APPLICATION-scoped so a workspace file cannot change it."""
     monkeypatch.setattr(cc, "CACHE", tmp_path / "cache")
@@ -2387,9 +2387,11 @@ def test_build_workspace_tints_activity_and_status_bar(cc, tmp_path, monkeypatch
                                {"title": "C", "paths": [str(folder)], "colour": "teal"}, None)
     settings = json.loads(ws.read_text())["settings"]
     cc_block = settings["workbench.colorCustomizations"]
-    assert cc_block["activityBar.background"] == cc.CARD_COLOURS["teal"]
     assert cc_block["statusBar.background"] == cc.CARD_COLOURS["teal"]
     assert cc_block["statusBar.foreground"] == "#ffffff"
+    # Status bar ONLY: tinting the activity bar as well was tried on four real windows and
+    # was too loud to work as a hint. And titleBar.* can't work under a native title bar.
+    assert not any(k.startswith("activityBar.") for k in cc_block)
     assert not any(k.startswith("titleBar.") for k in cc_block)
 
 

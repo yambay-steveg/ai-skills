@@ -135,8 +135,10 @@ line meant for a human at a glance was written for a machine.
 
 ### `--colour` — which VS Code window is which
 
-Each card carries a **window colour**, tinting its VS Code window's **activity bar and status bar**
-so several open cards are told apart at a glance. Assigned at `cardctl new` from a 14-token palette,
+Each card carries a **window colour**, tinting its VS Code window's **status bar** so several
+open cards are told apart at a glance. Status bar *only*: tinting the activity bar as well was
+tried on four real windows (9 Aug) and read as noise rather than a hint — when every window
+shouts, none stands out. Assigned at `cardctl new` from a 14-token palette,
 **collision-aware** (never the same as a live card's), and stable for the life of the card. Cards
 that predate tinting earn one on their first launch and keep it.
 
