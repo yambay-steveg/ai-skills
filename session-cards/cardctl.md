@@ -81,6 +81,7 @@ is a create/edit, so a filesystem write is correct here.
 
 ```bash
 cardctl set <card.md> --summary "one-line what this is"  # the board's standing summary line
+cardctl set <card.md> --colour violet                # window tint (token | #rrggbb | auto | none)
 cardctl set <card.md> --area area/v7                 # replace the area/* facet (warns if unused elsewhere)
 cardctl new <slug> --area v7 --strict                # refuse an area no existing card uses
 cardctl set <card.md> --program managing-ai-activities  # set/repoint program: "[[…]]" home link
@@ -131,6 +132,35 @@ for a next-action queue, and the board face has no room to render one.
 ("waiting on X", "shipped Y, Z still open") — not an instruction to itself. Getting this wrong is
 what the convention exists to prevent: for months `latest` filled up with handoff prose, so the one
 line meant for a human at a glance was written for a machine.
+
+### `--colour` — which VS Code window is which
+
+Each card carries a **window colour**, tinting its VS Code window's **status bar** so several
+open cards are told apart at a glance. Status bar *only*: tinting the activity bar as well was
+tried on four real windows (9 Aug) and read as noise rather than a hint — when every window
+shouts, none stands out. Assigned at `cardctl new` from a 14-token palette,
+**collision-aware** (never the same as a live card's), and stable for the life of the card. Cards
+that predate tinting earn one on their first launch and keep it.
+
+```bash
+cardctl set <card.md> --colour violet     # a palette token
+cardctl set <card.md> --colour "#4b2e83"  # or raw hex (foreground computed for contrast)
+cardctl set <card.md> --colour auto       # reassign from the palette
+cardctl set <card.md> --colour none       # opt out — no colorCustomizations written at all
+```
+
+Tokens rather than hex on the card so the palette can be retuned centrally without rewriting every
+card, and so `colour: teal` stays readable in the file and in `list --json` (which lets the board
+show the same colour later, if that's ever wanted).
+
+**Not the title bar.** `titleBar.*` is ignored under macOS's native title bar, and
+`window.titleBarStyle` is **APPLICATION-scoped** — a workspace file cannot change it (verified in
+VS Code's own bundle: the setting registers with `scope: 1`). Tinting the title bar would need
+`"window.titleBarStyle": "custom"` in User settings, globally, which changes how every VS Code
+window looks. Left as an opt-in you can take later.
+
+Archived cards release their colour: their windows aren't open, and a 14-token palette across ~69
+cards would otherwise exhaust immediately.
 
 ## `list` — the board's read interface
 
@@ -219,6 +249,20 @@ listing (`-` in the id column for a null id). This powers the board's session-pa
 recently-closed).
 
 ## `focus` — window-targeting primitive
+
+**Window title layout (9 Aug 2026): `<slug> — <card title>`.** Window switchers (App Exposé,
+Mission Control) truncate from the right, so with the human title first, several cards sharing a
+name prefix were indistinguishable exactly where you most need to tell them apart — one of the
+reasons window tinting was asked for. `${rootNameShort}` also drops VS Code's " (Workspace)"
+decoration, reclaiming ~12 characters.
+
+`slug_from_window_title` reads **both** layouts, told apart by that suffix (`${rootName}` carries
+it, `${rootNameShort}` doesn't) — no card-store lookup needed. Windows opened before the change
+keep their old titles until relaunched, so both are in play at once.
+
+**If you change this format, the slug must stay recoverable**: `windows` and `focus` map a window
+back to its card by parsing it, and the board's Focus button and open-or-focus decision depend on
+that mapping.
 
 `cardctl focus <card.md>` brings the VS Code window for that card to the front. VS Code's resume URI has
 no window-targeting param, so this is the deterministic complement to launch's best-effort `activate` nudge.
