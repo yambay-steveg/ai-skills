@@ -250,6 +250,20 @@ recently-closed).
 
 ## `focus` — window-targeting primitive
 
+**Window title layout (9 Aug 2026): `<slug> — <card title>`.** Window switchers (App Exposé,
+Mission Control) truncate from the right, so with the human title first, several cards sharing a
+name prefix were indistinguishable exactly where you most need to tell them apart — one of the
+reasons window tinting was asked for. `${rootNameShort}` also drops VS Code's " (Workspace)"
+decoration, reclaiming ~12 characters.
+
+`slug_from_window_title` reads **both** layouts, told apart by that suffix (`${rootName}` carries
+it, `${rootNameShort}` doesn't) — no card-store lookup needed. Windows opened before the change
+keep their old titles until relaunched, so both are in play at once.
+
+**If you change this format, the slug must stay recoverable**: `windows` and `focus` map a window
+back to its card by parsing it, and the board's Focus button and open-or-focus decision depend on
+that mapping.
+
 `cardctl focus <card.md>` brings the VS Code window for that card to the front. VS Code's resume URI has
 no window-targeting param, so this is the deterministic complement to launch's best-effort `activate` nudge.
 It prefers a **Hammerspoon focus-by-id**: enumerate the `Code` windows (as `windows` does), find the one

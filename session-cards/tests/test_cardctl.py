@@ -1559,7 +1559,7 @@ def test_build_workspace_injects_window_title(cc, tmp_path, monkeypatch):
     card = make_card(tmp_path / "Cards", "demo", title="My Card", paths=[str(folder)])
     ws, folders = cc.build_workspace(str(card), {"title": "My Card", "paths": [str(folder)]}, None)
     settings = json.loads(ws.read_text())["settings"]
-    assert settings["window.title"] == "My Card — ${rootName}"
+    assert settings["window.title"] == "${rootNameShort} — My Card"
 
 
 # ── build_workspace: bypass is always armed, never forced (slice 9a) ──────────
@@ -1646,10 +1646,40 @@ def test_slug_from_window_title_modified_suffix(cc):
     assert cc.slug_from_window_title(
         "Foo — determine-card-hiearchy (Workspace) — Modified"
     ) == "determine-card-hiearchy"
-    # …and without the (Workspace) segment too.
+
+
+# ── new title layout: slug first (9 Aug 2026) ──────────────────────────────────
+def test_slug_from_window_title_new_format_takes_the_first_segment(cc):
+    """Titles are now "<slug> — <card title>": window switchers truncate from the right,
+    so the identifying part has to come first."""
     assert cc.slug_from_window_title(
-        "Foo — determine-card-hiearchy — Modified"
-    ) == "determine-card-hiearchy"
+        "mapping-foundation-review — Mapping Foundation / V7 Geospatial"
+    ) == "mapping-foundation-review"
+
+
+def test_slug_from_window_title_new_format_with_emdash_in_the_card_title(cc):
+    assert cc.slug_from_window_title(
+        "axon-whitepaper-signoff — Axon whitepaper — sign-off"
+    ) == "axon-whitepaper-signoff"
+
+
+def test_slug_from_window_title_new_format_modified(cc):
+    assert cc.slug_from_window_title(
+        "japan-trip-planning — Japan trip — Modified"
+    ) == "japan-trip-planning"
+
+
+def test_slug_from_window_title_distinguishes_formats_by_the_workspace_suffix(cc):
+    """The two layouts are told apart with no card-store lookup: `${rootName}` (old) carries
+    VS Code's " (Workspace)" decoration, `${rootNameShort}` (new) doesn't. A first attempt
+    matched candidates against known card stems instead, which read the real vault during
+    unit tests and cost a store scan per window — this is cheaper and has no I/O."""
+    assert cc.slug_from_window_title("Old Title — old-slug (Workspace)") == "old-slug"
+    assert cc.slug_from_window_title("new-slug — New Title") == "new-slug"
+    # A bare "A — B" with no suffix is genuinely ambiguous; it's read as the current format.
+    # Our generated windows always carry (Workspace) in the old layout, so this shape only
+    # arises for hand-made windows, where either answer is a guess.
+    assert cc.slug_from_window_title("A — B") == "A"
 
 
 def test_slug_from_window_title_none_without_separator(cc):

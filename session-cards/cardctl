@@ -292,8 +292,14 @@ def build_workspace(card_path, fm, sid):
     # window.title makes each generated window identifiable by its card, so `focus`
     # (and launch's window-raise) can target the right one — VS Code's resume URI has
     # no window-targeting param.
+    # SLUG FIRST, then the human title. Window titles are truncated from the right in
+    # App Exposé / window switchers, and with the title first, four cards whose names share
+    # a prefix ("Mapping Foundation / V7 Geospatial — mapping-fou…") were indistinguishable
+    # exactly where identification matters most — the reason tinting was asked for at all.
+    # `${rootNameShort}` is the workspace name without VS Code's " (Workspace)" suffix,
+    # which reclaims ~12 characters of the same scarce space.
     title = unquote(fm.get("title") or Path(card_path).stem)
-    settings = {"window.title": f"{title} — ${{rootName}}"}
+    settings = {"window.title": f"${{rootNameShort}} — {title}"}
 
     # Bypass is always AVAILABLE in the mode selector (armed), but no session is forced
     # into it — each tab dials up/down. Mirrors the User-settings arm; also works on
@@ -2120,21 +2126,31 @@ def hs_code_windows():
 def slug_from_window_title(title):
     """Parse the card slug out of a VS Code window title.
 
-    VS Code renders our generated windows as "<card title> — <rootName> (Workspace)",
-    with a trailing " — Modified" when the window is dirty. The "<rootName>" segment is
-    the card slug. Strip the trailing " — Modified" then " (Workspace)", then take the
-    substring after the LAST " — " (em-dash, U+2014, space-padded) so a card title that
-    itself contains " — " is handled. Returns None when there's no " — " separator (e.g.
-    a manually-opened folder window)."""
+    Two formats are in play at once, and the suffix tells them apart with no lookup:
+
+      new (9 Aug 2026+)  "<slug> — <card title>"                 → slug is FIRST
+      old                "<card title> — <slug> (Workspace)"     → slug is LAST
+
+    `${rootNameShort}` (new) drops VS Code's " (Workspace)" decoration, while `${rootName}`
+    (old) carries it — so a trailing " (Workspace)" *is* the marker for the old layout. A
+    window opened before the change keeps its old title until it is relaunched, so both
+    must keep working; this is deliberately syntactic, needing no card-store read.
+
+    " — Modified" (dirty window) is stripped first. Returns None when there's no " — " at
+    all, e.g. a hand-opened folder window.
+    """
     t = (title or "").strip()
     SEP = " — "  # space + em-dash + space
-    for suffix in (SEP + "Modified", " (Workspace)"):
-        if t.endswith(suffix):
-            t = t[: -len(suffix)].rstrip()
-    idx = t.rfind(SEP)
-    if idx == -1:
+    if t.endswith(SEP + "Modified"):
+        t = t[: -len(SEP + "Modified")].rstrip()
+    old_format = t.endswith(" (Workspace)")
+    if old_format:
+        t = t[: -len(" (Workspace)")].rstrip()
+    if SEP not in t:
         return None
-    return t[idx + len(SEP):].strip() or None
+    # A card title may itself contain " — ", so split from the end the slug sits at.
+    slug = t.rsplit(SEP, 1)[1] if old_format else t.split(SEP, 1)[0]
+    return slug.strip() or None
 
 
 def stem_to_card():
