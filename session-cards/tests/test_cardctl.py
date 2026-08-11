@@ -564,6 +564,69 @@ def test_note_guards_match_the_other_writers(cc, tmp_path, monkeypatch, capsys, 
     assert msg in capsys.readouterr().err
 
 
+# ── list --json exposes the window colour ───────────────────────────────────────
+@pytest.mark.parametrize("value", ["teal", "#4b2e83", "none"])
+def test_colour_is_written_as_valid_yaml(cc, tmp_path, monkeypatch, value):
+    """A raw `#rrggbb` written bare makes YAML treat the rest of the line as a comment, so
+    Obsidian reads the field as empty while cardctl's own naive parser reads it fine — the
+    failure hides from the tool that caused it. Same trap as titles (#57); asserted here with
+    a real YAML parser, not cardctl's reader."""
+    yaml = pytest.importorskip("yaml")
+    cards, _ = _wire_new(cc, tmp_path, monkeypatch)
+    cc.cmd_new(_new_ns(f"c-{value.strip('#')}", colour=value))
+    fm_block = (cards / f"c-{value.strip('#')}.md").read_text().split("---\n")[1]
+    assert yaml.safe_load(fm_block)["colour"] == value
+
+
+def test_colours_in_use_counts_quoted_tokens(cc, tmp_path, monkeypatch):
+    """Regression: values are stored quoted, so a raw read stopped matching the palette and
+    collision-avoidance silently degraded to 'nothing is in use'."""
+    cards = tmp_path / "Cards"; cards.mkdir(parents=True)
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    (cards / "a.md").write_text(
+        '---\ntype: project\ntitle: T\nstatus: in-progress\ncolour: "teal"\npaths:\n  - \n---\n')
+    assert cc.colours_in_use()["teal"] == 1
+    assert cc.pick_colour() != "teal"
+
+
+def test_card_to_dict_exposes_colour_token_and_hex(cc, tmp_path, monkeypatch):
+    """The board renders the same colour as the VS Code window, so it needs the resolved hex
+    — but it must not carry a copy of the palette, hence both fields."""
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "c")
+    card.write_text(card.read_text().replace("status: in-progress",
+                                             "status: in-progress\ncolour: teal"))
+    d = cc.card_to_dict(str(card), "work")
+    assert d["colour"] == "teal"
+    assert d["colourHex"] == cc.CARD_COLOURS["teal"]
+
+
+def test_card_to_dict_colour_is_none_when_unset_or_opted_out(cc, tmp_path, monkeypatch):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    plain = make_card(cards, "plain")
+    d = cc.card_to_dict(str(plain), "work")
+    assert d["colour"] is None and d["colourHex"] is None
+
+    opted = make_card(cards, "opted")
+    opted.write_text(opted.read_text().replace("status: in-progress",
+                                               "status: in-progress\ncolour: none"))
+    d2 = cc.card_to_dict(str(opted), "work")
+    assert d2["colour"] == "none"      # what's on the card, verbatim
+    assert d2["colourHex"] is None     # …but nothing to render
+
+
+def test_card_to_dict_passes_raw_hex_through(cc, tmp_path, monkeypatch):
+    cards = tmp_path / "Cards"
+    monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
+    card = make_card(cards, "hexed")
+    card.write_text(card.read_text().replace("status: in-progress",
+                                             "status: in-progress\ncolour: \"#4b2e83\""))
+    d = cc.card_to_dict(str(card), "work")
+    assert d["colourHex"] == "#4b2e83"
+
+
 # ── unpin (clear the pin, keep the history) ─────────────────────────────────────
 def test_unpin_clears_session_id_and_keeps_history(cc, tmp_path, monkeypatch, capsys):
     cards = tmp_path / "Cards"
@@ -2456,8 +2519,8 @@ def test_new_assigns_a_colour_and_avoids_ones_in_use(cc, tmp_path, monkeypatch):
     cards, _ = _wire_new(cc, tmp_path, monkeypatch)
     cc.cmd_new(_new_ns("first"))
     cc.cmd_new(_new_ns("second"))
-    a = cc.read_card(str(cards / "first.md"))[0]["colour"]
-    b = cc.read_card(str(cards / "second.md"))[0]["colour"]
+    a = cc.unquote(cc.read_card(str(cards / "first.md"))[0]["colour"])
+    b = cc.unquote(cc.read_card(str(cards / "second.md"))[0]["colour"])
     assert a in cc.CARD_COLOURS and b in cc.CARD_COLOURS
     assert a != b
 
@@ -2482,7 +2545,7 @@ def test_archived_cards_free_their_colour_for_reuse(cc, tmp_path, monkeypatch):
 def test_new_colour_none_opts_out(cc, tmp_path, monkeypatch):
     cards, _ = _wire_new(cc, tmp_path, monkeypatch)
     cc.cmd_new(_new_ns("plain", colour="none"))
-    assert cc.read_card(str(cards / "plain.md"))[0]["colour"] == "none"
+    assert cc.unquote(cc.read_card(str(cards / "plain.md"))[0]["colour"]) == "none"
 
 
 def test_new_rejects_a_bad_colour(cc, tmp_path, monkeypatch, capsys):
@@ -2499,9 +2562,9 @@ def test_set_colour_changes_and_persists(cc, tmp_path, monkeypatch):
     monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
     card = make_card(cards, "c")
     cc.cmd_set(_set_ns(str(card), colour="violet"))
-    assert cc.read_card(str(card))[0]["colour"] == "violet"
+    assert cc.unquote(cc.read_card(str(card))[0]["colour"]) == "violet"
     cc.cmd_set(_set_ns(str(card), colour="#4b2e83"))
-    assert cc.read_card(str(card))[0]["colour"] == "#4b2e83"
+    assert cc.unquote(cc.read_card(str(card))[0]["colour"]) == "#4b2e83"
 
 
 def test_set_colour_auto_reassigns_from_the_palette(cc, tmp_path, monkeypatch):
@@ -2509,7 +2572,7 @@ def test_set_colour_auto_reassigns_from_the_palette(cc, tmp_path, monkeypatch):
     monkeypatch.setattr(cc, "CARDS_DIRS", {"t": cards})
     card = make_card(cards, "c")
     cc.cmd_set(_set_ns(str(card), colour="auto"))
-    assert cc.read_card(str(card))[0]["colour"] in cc.CARD_COLOURS
+    assert cc.unquote(cc.read_card(str(card))[0]["colour"]) in cc.CARD_COLOURS
 
 
 def test_ensure_card_colour_assigns_once_then_is_stable(cc, tmp_path, monkeypatch, capsys):

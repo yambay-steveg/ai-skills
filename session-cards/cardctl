@@ -867,7 +867,7 @@ def colour_hex(value):
     Accepts a palette token (`teal`) or a raw `#rrggbb` escape hatch. Anything else is
     treated as unset rather than fatal: a typo'd colour must not stop a card launching.
     """
-    v = str(value or "").strip().lower()
+    v = unquote(str(value or "")).strip().lower()
     if not v or v == "none":
         return None
     if v in CARD_COLOURS:
@@ -903,7 +903,7 @@ def colours_in_use(exclude_card=None):
             continue
         if str(fm.get("status") or "").strip().lower() == "archived":
             continue
-        tok = str(fm.get("colour") or "").strip().lower()
+        tok = unquote(str(fm.get("colour") or "")).strip().lower()
         if tok in CARD_COLOURS:
             used[tok] += 1
     return used
@@ -928,12 +928,12 @@ def ensure_card_colour(card_path, fm):
     than a migration, they earn one the first time they're launched — a single write, at a
     moment the card is already being handled. `colour: none` opts out and is respected.
     """
-    raw = str(fm.get("colour") or "").strip()
+    raw = unquote(str(fm.get("colour") or "")).strip()
     if raw:
         return raw
     token = pick_colour(card_path)
     text = Path(card_path).read_text()
-    Path(card_path).write_text(set_fm_field(text, "colour", token))
+    Path(card_path).write_text(set_fm_field(text, "colour", yq(token)))
     fm["colour"] = token
     print(f"  assigned window colour: {token}")
     return token
@@ -1162,7 +1162,7 @@ def cmd_new(args):
     fm = [f"type: {args.type}", f"title: {yq(args.title)}", f"status: {args.status}",
           f"summary: {yq(args.summary)}",
           f"latest: {yq(args.latest)}",
-          f"tags: [{', '.join(tags)}]", f"colour: {colour}"]
+          f"tags: [{', '.join(tags)}]", f"colour: {yq(colour)}"]
     if args.program:
         fm.append(f'program: "[[{args.program}]]"')
     if args.session:
@@ -1757,6 +1757,11 @@ def card_to_dict(path, source):
         "fileName": p.stem,
         "title": unquote(fm.get("title") or p.stem),
         "status": unquote(fm.get("status") or ""),
+        # Window colour, both ways round: the token as written (readable, what `set --colour`
+        # takes) and the resolved hex, so the board can render the same colour as the VS Code
+        # window without carrying a copy of the palette. None when unset or `colour: none`.
+        "colour": unquote(fm.get("colour") or "") or None,
+        "colourHex": colour_hex(fm.get("colour")),
         "summary": unquote(fm.get("summary") or ""),
         "latest": unquote(fm.get("latest") or ""),
         "tags": [t.strip() for t in tags],
@@ -2471,7 +2476,9 @@ def cmd_set(args):
         if want != "none" and want not in CARD_COLOURS and not HEX_RE.match(want):
             die(f"invalid --colour {args.colour!r} — a palette token "
                 f"({', '.join(CARD_COLOURS)}), a #rrggbb hex, 'auto', or 'none'")
-        text = set_fm_field(text, "colour", want)
+        # Quoted: a raw `#rrggbb` written bare makes YAML treat the rest of the line as a
+        # comment, so Obsidian reads the field as empty. Same trap as titles in #57.
+        text = set_fm_field(text, "colour", yq(want))
         changes.append(("colour", want))
 
     if args.latest is not None:

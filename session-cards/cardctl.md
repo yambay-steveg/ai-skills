@@ -150,8 +150,13 @@ cardctl set <card.md> --colour none       # opt out — no colorCustomizations w
 ```
 
 Tokens rather than hex on the card so the palette can be retuned centrally without rewriting every
-card, and so `colour: teal` stays readable in the file and in `list --json` (which lets the board
-show the same colour later, if that's ever wanted).
+card, and so `colour: teal` stays readable in the file. Values are written **quoted** — a bare
+`#rrggbb` would make YAML treat the rest of the line as a comment, so Obsidian would read the
+field as empty while cardctl's own parser read it fine.
+
+`list --json` exposes both **`colour`** (the token as written) and **`colourHex`** (resolved), so
+the board can render the same colour as the window without carrying a copy of the palette. Both
+are `null` when unset; an opted-out card reports `colour: "none"` with `colourHex: null`.
 
 **The title bar is tinted too — but only if you opt in.** `titleBar.*` keys are written on every
 launch and are simply **ignored** under macOS's default *native* title bar, so they cost nothing.
