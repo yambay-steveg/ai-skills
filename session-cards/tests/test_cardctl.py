@@ -2600,6 +2600,20 @@ def test_ensure_card_colour_respects_an_opt_out(cc, tmp_path, monkeypatch):
     assert cc.ensure_card_colour(str(card), fm) == "none"
 
 
+def test_new_does_not_tell_you_to_click_a_retired_button(cc, tmp_path, monkeypatch, capsys):
+    """#61 retired the in-note button bar, but `new` kept printing "open it in Obsidian
+    (Reading view) and click ▶ Launch session" — instructing the user to do something that no
+    longer exists. Guarding the hint, not just fixing it: the removal swept card bodies, the
+    template, the deploy surface and two vaults, and still missed a print statement."""
+    cards, _ = _wire_new(cc, tmp_path, monkeypatch)
+    cc.cmd_new(_new_ns("hint-card"))
+    out = capsys.readouterr().out
+    assert "Reading view" not in out
+    assert "▶" not in out
+    # …and says something that actually works.
+    assert "cardctl launch" in out or "board" in out
+
+
 def test_new_writes_no_button_bar(cc, tmp_path, monkeypatch):
     """R14: a card body is a record, not a control surface — launching is the board's job.
     Without this, every new card would re-seed the retired Meta Bind buttons and the

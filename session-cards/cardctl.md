@@ -414,9 +414,9 @@ pure pointer card over `--path` folders; with no `--path` its `paths` is empty a
 ### `launch`
 
 1. Parses the card's frontmatter (`paths`, `sessionId`). **If the primary path (`paths[0]`, the
-   activity folder) doesn't exist yet, it's created** (+ a stub README) — so a GUI-created card
-   (new note in `Cards/`) launches cleanly: make a card → ▶ Launch → folder created + session
-   starts, no `cardctl new` needed. (Only created when the parent dir exists, so a typo isn't
+   activity folder) doesn't exist yet, it's created** (+ a stub README) — so a card made by hand
+   in Obsidian (a new note in `Cards/`) launches cleanly: write the note → launch it from the
+   board → folder created + session starts, no `cardctl new` needed. (Only created when the parent dir exists, so a typo isn't
    fabricated deep.)
 2. **Picks the session (R14 precedence):** `--new` → fresh; else pinned `sessionId`; else the
    **newest session created under the card's primary context folder** (`--pick` lists them with
