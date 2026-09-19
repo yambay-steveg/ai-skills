@@ -1,11 +1,11 @@
 ---
 name: fastmail-integration
 description: >
-  Read, search, and draft email from Steve's personal Fastmail account
-  (steve@godding.net) via the JMAP API. Use when the user says "check my
+  Read, search, draft, and download attachments from Steve's personal Fastmail
+  account (steve@godding.net) via the JMAP API. Use when the user says "check my
   Fastmail", "search my personal email", "any email from X", "read that
-  email", "draft a reply", "draft an email to X", or refers to godding.net /
-  personal (non-Yambay) mail. For Yambay/M365 work email use the m365 email
+  email", "save the attachment", "download that PDF", "draft a reply", "draft an
+  email to X", or refers to godding.net / personal (non-Yambay) mail. For Yambay/M365 work email use the m365 email
   skill instead.
 allowed-tools: Bash, Read, Write, Edit
 ---
@@ -19,6 +19,7 @@ the **JMAP API** with a Bearer API token. Supports:
 
 - **Search** mail by sender, recipient, subject, body, free text, folder, date
 - **Read** a single message in full (headers + body + attachment list)
+- **Download** an email's attachments to disk
 - **List** folders (mailboxes) with counts
 - **Draft** new emails and replies
 
@@ -32,6 +33,7 @@ Use when the user wants to work with **personal** email:
 - "check my Fastmail", "any new personal email", "search my godding.net mail"
 - "any email from <person/company>", "find the email about <topic>"
 - "read that email", "what does it say"
+- "save the attachment", "download that PDF", "get me the quote he sent"
 - "draft a reply to that", "draft an email to <someone>"
 
 Do NOT use when:
@@ -89,6 +91,33 @@ python3 scripts/read_email.py --id <email-id> --html        # HTML body
 python3 scripts/read_email.py --id <email-id> --mark-read   # also mark read
 ```
 
+### Download attachments
+
+```bash
+python3 scripts/download_attachment.py --id <email-id> --list          # what's attached
+python3 scripts/download_attachment.py --id <email-id> --out ~/Downloads
+python3 scripts/download_attachment.py --id <email-id> --out <dir> --name "QUOTE.pdf"
+python3 scripts/download_attachment.py --id <email-id> --out <dir> --index 0
+```
+
+Behaviour worth knowing:
+
+- Output filenames are **kebab-cased** by default, so
+  `STEVE GODDING - CSV CUTLIST TEMPLATE.pdf` lands as
+  `steve-godding-csv-cutlist-template.pdf`. Pass `--keep-name` for the
+  sender's own filename.
+- **Inline parts are skipped** when downloading everything, because signature
+  images and embedded logos show up in JMAP's attachment list alongside real
+  attachments. `--include-inline` downloads them too; `--name` and `--index`
+  reach them regardless. `--list` shows each part's `disposition` so you can
+  tell which is which.
+- Every download is **checked against the byte count JMAP reported** and fails
+  loudly rather than writing a truncated file.
+- An existing file is **never overwritten** without `--force`, and the check
+  runs across all targets before anything is written, so a multi-attachment
+  download is all-or-nothing.
+- Indexes are positions in the full attachment list, matching `--list`.
+
 ### List folders
 
 ```bash
@@ -111,6 +140,8 @@ in his Fastmail Drafts folder for review and sending — do not claim it was sen
 
 1. Search to find candidate messages → show Steve the shortlist.
 2. Read the chosen message by `id` for full content.
+   If Steve wants a file off it, download by the same `id` and tell him the
+   path you wrote.
 3. If drafting a reply, draft from the original's `id` so threading is correct.
 4. Show the drafted text and confirm it's saved to Drafts for him to send.
 

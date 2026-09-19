@@ -25,6 +25,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 import requests
 from dotenv import load_dotenv
@@ -39,6 +40,8 @@ MAIL = "urn:ietf:params:jmap:mail"
 SUBMISSION = "urn:ietf:params:jmap:submission"
 
 TIMEOUT = 30
+# Attachments can be large, so blob downloads get a longer budget.
+DOWNLOAD_TIMEOUT = 60
 
 
 def die(message, **extra):
@@ -162,6 +165,39 @@ class JmapClient:
     def first_result(self, response):
         """Return the args dict of the first method response."""
         return response["methodResponses"][0][1]
+
+    def download_blob(self, blob_id, content_type="application/octet-stream",
+                      name="download", timeout=DOWNLOAD_TIMEOUT):
+        """Download a blob (e.g. an attachment) and return its bytes.
+
+        The download URL is a template on the JMAP session resource; the
+        placeholders are substituted and percent-encoded here. `name` is what
+        the server is asked to label the download as — it does not have to
+        match what the caller writes to disk.
+        """
+        template = self.session_data.get("downloadUrl")
+        if not template:
+            die("JMAP session resource has no downloadUrl template.")
+
+        url = template
+        for placeholder, value in (
+            ("{accountId}", self.account_id),
+            ("{blobId}", blob_id),
+            ("{type}", content_type),
+            ("{name}", name),
+        ):
+            url = url.replace(placeholder, quote(str(value), safe=""))
+
+        try:
+            resp = self._session.get(url, timeout=timeout)
+        except requests.RequestException as exc:
+            die("Blob download failed", blob_id=blob_id, details=str(exc))
+
+        if resp.status_code != 200:
+            die("Blob download returned non-200", blob_id=blob_id,
+                status=resp.status_code, body=resp.text[:500])
+
+        return resp.content
 
     # --- convenience helpers ---
 

@@ -3,8 +3,8 @@
 **Started:** 2026-06-27 (AWST)
 
 A Claude Code skill that connects to Steve's personal Fastmail account
-(`steve@godding.net`) over the **JMAP API** to **search, read, list, and draft**
-email — all from within a Claude Code session.
+(`steve@godding.net`) over the **JMAP API** to **search, read, list, draft, and
+pull attachments off** email — all from within a Claude Code session.
 
 **Draft-only by design.** The skill never sends. It creates drafts in Fastmail
 for review and manual sending. This is enforced in two places: there is no send
@@ -40,13 +40,14 @@ Claude Code  ──runs──▶  scripts/*.py  ──use──▶  lib/jmap.py 
 | Path | Responsibility |
 |------|----------------|
 | `SKILL.md` | Skill definition — triggers, setup, usage. What Claude reads. |
-| `lib/jmap.py` | JMAP client: credential loading, session discovery (`apiUrl` + `accountId`), batched `call()`, mailbox helpers (`by_role`/`by_name`). |
+| `lib/jmap.py` | JMAP client: credential loading, session discovery (`apiUrl` + `accountId`), batched `call()`, mailbox helpers (`by_role`/`by_name`), `download_blob()`. |
 | `scripts/test_auth.py` | Verify credentials; print account + auth scheme. |
 | `scripts/list_folders.py` | `Mailbox/get` → folders with total/unread counts. |
 | `scripts/search_email.py` | `Email/query` + `Email/get` → message summaries. ANDs filters. |
 | `scripts/read_email.py` | `Email/get` → full message (headers, body text/HTML, attachments); optional `--mark-read`. |
+| `scripts/download_attachment.py` | `Email/get` → blob download URL → attachments on disk. Kebab-cases names, skips inline parts, verifies byte counts, refuses to overwrite. |
 | `scripts/create_draft.py` | `Email/set create` into Drafts. New mail or `--reply-to` (inherits threading/recipients/subject). Never sends. |
-| `tests/` | Offline unit tests (no network) for filter building + auth-scheme selection. |
+| `tests/` | Offline unit tests (no network) for filter building, auth-scheme selection, and attachment naming/selection. |
 
 ---
 
@@ -124,6 +125,11 @@ python3 scripts/read_email.py --id <email-id> --html --mark-read
 # Folders
 python3 scripts/list_folders.py
 
+# Attachments
+python3 scripts/download_attachment.py --id <email-id> --list
+python3 scripts/download_attachment.py --id <email-id> --out ~/Downloads
+python3 scripts/download_attachment.py --id <email-id> --out <dir> --index 0 --keep-name
+
 # Draft (never sends — lands in Fastmail Drafts)
 python3 scripts/create_draft.py --to a@example.com --subject "Hi" --body "Text."
 python3 scripts/create_draft.py --reply-to <email-id> --body "Thanks!"
@@ -137,6 +143,13 @@ python3 scripts/create_draft.py --reply-to <email-id> --body "Thanks!"
   token, then a `send_email.py` that calls `EmailSubmission/set` referencing a
   created draft. Gate it behind explicit in-chat confirmation. This was
   intentionally left out — see the `apple-family-email-setup` decision (draft-only).
+- **Blob download mechanics:** the session resource carries a `downloadUrl`
+  template (`.../{accountId}/{blobId}/{name}?type={type}`). `JmapClient.download_blob()`
+  percent-encodes the substitutions and fetches it on the same authenticated
+  session — the blob endpoint is a plain HTTPS GET, not a JMAP method call.
+- **Inline vs real attachments:** JMAP's `attachments` list includes inline
+  parts, so a message with `hasAttachment: false` can still report two PNGs
+  (an HTML signature). `disposition` is the discriminator.
 - **More search filters:** extend `build_filter()` in `search_email.py`; JMAP
   `Email/query` filter conditions are listed in RFC 8621.
 - **Contacts / calendar:** add the relevant capability URN to the `using` list in
